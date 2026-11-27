@@ -254,3 +254,70 @@ export function IntakePanel({ tab, intake, signals, progress }) {
 }
 
 if (typeof window !== "undefined") Object.assign(window, { LoopProgress, IntakePanel, INTAKE_MILESTONES });
+
+// ── In-app recurring schedule ────────────────────────────────────────────────
+// Pure logic lives in loop-schedule.js (tested); this is only the control.
+import { CADENCES, WEEKDAYS, nextRun, describe as describeSchedule, normalize as normalizeSchedule } from "./loop-schedule.js";
+
+const _fmtWhen = (ms) => ms ? new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+
+export function LoopScheduleControl({ schedule, onChange, blockedReason = null, ticker = "" }) {
+  const [open, setOpen] = React.useState(false);
+  const s = normalizeSchedule(schedule);
+  const anchor = Math.max(s.lastRunAt || 0, s.enabledAt || 0, s.skippedAt || 0) || Date.now();
+  const next = s.enabled ? nextRun(s, anchor) : null;
+  const set = (patch) => {
+    const merged = { ...s, ...patch };
+    // Switching on starts the clock now — it must not fire for a slot that already passed.
+    if (patch.enabled === true && !s.enabled) merged.enabledAt = Date.now();
+    if (patch.cadence || patch.time || patch.weekday != null || patch.day != null) merged.enabledAt = Date.now();
+    onChange(normalizeSchedule(merged));
+  };
+  const row = { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12 };
+  const lbl = { width: 92, color: "var(--ink-3)", fontSize: 11 };
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <button className="btn" onClick={() => setOpen(o => !o)} aria-expanded={open}
+        title={s.enabled ? `${describeSchedule(s)} — runs while this app is open` : "Run the loop automatically on a schedule"}>
+        <span aria-hidden="true">⏱</span> {s.enabled ? `Scheduled · next ${_fmtWhen(next)}` : "Schedule"}
+      </button>
+      {open && (
+        <div className="stage-detail" role="dialog" aria-label="Loop schedule"
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, width: 340, padding: 14,
+                   background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,.12)" }}>
+          <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Recurring Run Loop{ticker ? ` · ${ticker}` : ""}</div>
+          <label style={row}><input type="checkbox" checked={s.enabled} onChange={e => set({ enabled: e.target.checked })} /> <span>Run automatically</span></label>
+          <div style={row}><span style={lbl}>Repeat</span>
+            <select value={s.cadence} onChange={e => set({ cadence: e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
+              {CADENCES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select></div>
+          {s.cadence === "weekly" && (
+            <div style={row}><span style={lbl}>On</span>
+              <select value={s.weekday} onChange={e => set({ weekday: +e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
+                {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select></div>
+          )}
+          {(s.cadence === "monthly" || s.cadence === "quarterly") && (
+            <div style={row}><span style={lbl}>Day of month</span>
+              <select value={s.day} onChange={e => set({ day: +e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
+                {Array.from({ length: 28 }, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}</option>)}
+              </select></div>
+          )}
+          <div style={row}><span style={lbl}>At (local)</span>
+            <input type="time" value={s.time} onChange={e => e.target.value && set({ time: e.target.value })} disabled={!s.enabled} style={{ flex: 1 }} /></div>
+          <label style={row}><input type="checkbox" checked={s.runIfMissed} onChange={e => set({ runIfMissed: e.target.checked })} disabled={!s.enabled} />
+            <span>If a run was missed while the app was closed, run once when it opens</span></label>
+          <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", lineHeight: 1.6, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
+            {s.enabled ? <>{describeSchedule(s)}<br />Next run: <b>{_fmtWhen(next)}</b></> : "Off"}<br />
+            Last scheduled run: {_fmtWhen(s.lastRunAt)}
+            {blockedReason && <div style={{ color: "var(--amber-ink)", marginTop: 4 }}>Postponed: {blockedReason}</div>}
+          </div>
+          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
+            Runs inside this app, so it fires while the app is open in a browser tab. A scheduled run still stops at the review gates — nothing is auto-approved — and waits if a gate is already awaiting review.
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+if (typeof window !== "undefined") Object.assign(window, { LoopScheduleControl });

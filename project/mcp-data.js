@@ -291,6 +291,9 @@ window.MCP = (function () {
           rag:          _ragChar(sig.rag_status || 'Green'),
           affectedRisks: _domainsToRiskIds(allDomains, templateRisks),
           published:    sig.date || '',
+          // company | industry | macro | ambient — set server-side; ambient carries no weight
+          relevance:    sig.relevance_to_entity || '',
+          companyMentioned: !!sig.company_mentioned,
         });
       }
     }

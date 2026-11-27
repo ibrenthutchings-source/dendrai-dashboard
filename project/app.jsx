@@ -531,6 +531,11 @@ function App() {
   // built from whatever evidence has arrived so far (shown in Signal Intake).
   const [loopProgress, setLoopProgress] = useState(null);
   const [intake, setIntake] = useState(null);
+  // In-app recurring schedule (per ticker, kept in localStorage; see loop-schedule.js).
+  const [loopSchedule, setLoopScheduleState] = useState(() => LOOP_SCHEDULE.normalize(null));
+  const [schedBlocked, setSchedBlocked] = useState(null);
+  const appOpenedAtRef = useRef(Date.now());
+  const runLoopRef = useRef(null);
   const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
   // ---- Narrative analysis results (from S1 AI extract, fed to Gate 1 context) ----
@@ -1354,6 +1359,36 @@ function App() {
     if (res) {res({ ok: false, reason });delete gateResRef.current[n];}
   };
 
+  // Load this ticker's schedule when the ticker changes.
+  useEffect(() => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(LOOP_SCHEDULE.storageKey(cfg.ticker)) || "null"); } catch { /* corrupt entry → defaults */ }
+    setLoopScheduleState(LOOP_SCHEDULE.normalize(saved));
+    setSchedBlocked(null);
+  }, [cfg.ticker]);
+
+  // Scheduler tick. Fires the SAME runLoop() a manual click does. It never starts over a
+  // run in progress or a gate awaiting review (runLoop resets the stage / gate state, so
+  // firing then would wipe the reviewer's work) — it postpones and tries again.
+  useEffect(() => {
+    const tick = () => {
+      const st = LOOP_SCHEDULE.dueState(loopSchedule, Date.now(), appOpenedAtRef.current);
+      if (st.reason === "missed-skipped") { updateSchedule(p => ({ ...p, skippedAt: Date.now() })); return; }
+      if (!st.due) { setSchedBlocked(null); return; }
+      if (!cfg.ticker) { setSchedBlocked("no ticker is selected"); return; }
+      if (running) { setSchedBlocked("a run is already in progress"); return; }
+      if (gateState.g1 === "pending" || gateState.g2 === "pending") { setSchedBlocked("a review gate is awaiting sign-off"); return; }
+      setSchedBlocked(null);
+      updateSchedule(p => ({ ...p, lastRunAt: Date.now() }));
+      log(`Scheduled run starting (${LOOP_SCHEDULE.describe(loopSchedule)}${st.reason === "missed" ? " — catching up a missed run" : ""})`);
+      runLoopRef.current && runLoopRef.current();
+    };
+    if (!loopSchedule.enabled) { setSchedBlocked(null); return; }
+    tick();
+    const h = setInterval(tick, 20000);
+    return () => clearInterval(h);
+  }, [loopSchedule, running, gateState, cfg.ticker]);
+
   // ---- Run loop ----
   const speed = tweaks.runSpeed || 1;
   const t = (ms) => new Promise((res) => setTimeout(res, ms / speed));
@@ -1396,6 +1431,14 @@ function App() {
       setIntake({ risks: sc.risks, notAssessed: sc.notAssessed, sources: [...(maps || []), ...(Object.keys(sig.evidence).length ? [sig.evidence] : [])], updatedAt: Date.now() });
     } catch { /* the draft is a convenience — never let it break the run */ }
   };
+
+  // Persist + apply a schedule change. Functional so the timer and the popover never
+  // overwrite each other's fields.
+  const updateSchedule = (patchOrFn) => setLoopScheduleState(prev => {
+    const next = LOOP_SCHEDULE.normalize(typeof patchOrFn === "function" ? patchOrFn(prev) : { ...prev, ...patchOrFn });
+    try { localStorage.setItem(LOOP_SCHEDULE.storageKey(cfg.ticker), JSON.stringify(next)); } catch { /* storage full / blocked */ }
+    return next;
+  });
 
   async function runLoop() {
     setRunning(true);
@@ -1441,6 +1484,8 @@ function App() {
     }
   }
 
+  runLoopRef.current = runLoop;
+
   async function _runLoopBody() {
 
     // --- Data ingestion: MCP (Python servers) OR Live JS OR Mock ---
@@ -1467,6 +1512,7 @@ function App() {
       setLiveStatus("Calling Python MCP servers…");
       log("MCP: Starting full analysis…");
       try {
+        mile("fa", "active", "ratios, scores, forecasts");
         const mcpResult = await MCP.fetchFullAnalysis(cfg.ticker, {
           industry:      cfg.industry,
           includeRss:   signalSet.has("industry"),
@@ -1479,6 +1525,7 @@ function App() {
         });
 
         if (mcpResult._db_id) runIdRef.current = mcpResult._db_id;
+        mile("fa", "done", `${mcpResult.risk_scores?.risks?.length || 0} categories from ratios`);
 
         const industry = mcpResult.industry || cfg.industry || RISK_ENGINE.sic2industry(mcpResult.sic);
         setLiveStatus(`MCP OK · ${mcpResult.company_name} · ${industry}`);
@@ -1625,6 +1672,7 @@ function App() {
         // eps/etc. set built above. Best-effort and never fatal to the run:
         // everything above has already succeeded by this point.
         try {
+          mile("mat", "active");
           const matResult = await MCP.fetchMaterialAccounts(cfg.ticker);
           const materialAccts = (matResult?.accounts || []).filter(a => a.is_material);
           if (materialAccts.length) {
@@ -1658,7 +1706,9 @@ function App() {
             // empty chart.
             .filter(a => a.history.length > 0);
           }
+          mile("mat", "done", `${materialAccts.length} material`);
         } catch (matErr) {
+          mile("mat", "failed", matErr.message);
           log(`Material-account detection skipped: ${matErr.message}`);
         }
 
@@ -1690,6 +1740,8 @@ function App() {
         // RSS signals attach to a category even before it has any score.
         const evidenceMaps = [MCP.taxonomyEvidenceFromMcp(mcpResult.risk_scores)];
         const catalogRows = RISK_ENGINE.CATALOG.map(c => ({ id: c.id, name: c.name, category: c.category }));
+        publishIntake(evidenceMaps, currentRssSignals);
+        if (signalSet.has("industry")) mile("rss", "active");
 
         // MCP RSS signals → Loop signal format (industry feeds from predictive analytics)
         if (mcpResult.rss_signals && signalSet.has("industry")) {
@@ -1697,12 +1749,17 @@ function App() {
           currentRssSignals = rssSigs;
           setRssSignals(currentRssSignals);
           setRssLastUpdated(Date.now());
+          mile("rss", "done", `${rssSigs.length} signals, ${rssSigs.filter(s => (s.velocity || 0) > 0).length} weighted`);
+          publishIntake(evidenceMaps, currentRssSignals);
           log(`MCP RSS industry: ${rssSigs.length} signals (${rssSigs.filter(s => (s.velocity || 0) > 0).length} relevant to this entity)`);
         }
+
+        if (signalSet.has("industry") && !(mcpResult.rss_signals)) mile("rss", "failed", "no RSS section returned");
 
         // Compliance RSS (BIS/CISA/SEC/Fed/EPA) — server-side cached, supplement industry signals
         if (signalSet.has("industry") && rssEnabledFeeds.length > 0) {
           try {
+            mile("comp", "active");
             const rssFeeds = RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id));
             setRssRunProgress({ msg: "Fetching compliance feeds via MCP…", feedsDone: [] });
             const complianceResult = await MCP.ingestRssFeeds(rssEnabledFeeds, { ticker: cfg.ticker });
@@ -1717,19 +1774,25 @@ function App() {
             currentRssSignals = [...currentRssSignals, ...complianceSigs];
             setRssSignals(currentRssSignals);
             setRssLastUpdated(Date.now());
+            mile("comp", "done", `${complianceSigs.length} signals`);
+            publishIntake(evidenceMaps, currentRssSignals);
             log(`MCP compliance RSS: ${complianceSigs.length} signals · ${complianceResult.live_feeds} live · ${complianceResult.feeds.filter(r => r.cached).length} cached`);
             setRssRunProgress(null);
           } catch(e) {
             setRssRunProgress(null);
+            mile("comp", "failed", e.message || "fetch failed");
             log(`MCP compliance RSS: ${e.message || "fetch failed"}`);
           }
         }
 
+        if (signalSet.has("fred") && !mcpResult.macro_leading_indicators) mile("fred", "failed", "no indicators returned");
         // MCP FRED indicators → Loop signal format (appended to RSS)
         if (mcpResult.macro_leading_indicators && signalSet.has("fred")) {
           const fredSigs = MCP.mapFredSignals(mcpResult);
           currentRssSignals = [...currentRssSignals, ...fredSigs];
           setFredLive(mcpResult.macro_leading_indicators);
+          mile("fred", "done", `${fredSigs.length} indicators`);
+          publishIntake(evidenceMaps, currentRssSignals);
           log(`MCP FRED: ${fredSigs.length} macro indicators`);
         }
 
@@ -1744,19 +1807,23 @@ function App() {
         // Item 1A risk factors → enrich risk narratives with filing snippets
         if (signalSet.has("edgar") && !isPrivateTicker) {
           try {
+            mile("rf", "active");
             const factors = await MCP.fetchRiskFactors(cfg.ticker);
             _factorsResult = factors;   // snippets are attached after scoring
+            mile("rf", "done", `${factors.filings?.length || 0} filings parsed`);
             log(`MCP Risk Factors: ${factors.filings?.length || 0} filings parsed, snippets matched`);
-          } catch(e) { log(`MCP Risk Factors unavailable: ${e.message}`); }
+          } catch(e) { mile("rf", "failed", e.message); log(`MCP Risk Factors unavailable: ${e.message}`); }
         }
 
         // 8-K material events → seed CEM with real events
         if (!isPrivateTicker) try {
+          mile("k8", "active");
           const eightK = await MCP.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
           {
             const rs = MCP.eightKRoutingSummary(eightK);
             evidenceMaps.push(rs.evidence);
+            publishIntake(evidenceMaps, currentRssSignals);
             _eventRouting = { gateFlags: rs.gateFlags, unrouted: rs.unrouted, boardRotation: rs.boardRotation, sayOnPay: rs.sayOnPay };
             const nMapped = cemEvs.filter(e => e.mappingStatus === "mapped").length;
             const nReview = cemEvs.filter(e => e.mappingStatus === "review").length;
@@ -1779,7 +1846,8 @@ function App() {
             log(`MCP 8-K Events: ${cemEvs.length} material events loaded into CEM`);
             setUnreadCEM(u => u + cemEvs.length);
           }
-        } catch(e) { log(`MCP 8-K Events unavailable: ${e.message}`); }
+          mile("k8", "done", `${cemEvs.length} filing(s) routed`);
+        } catch(e) { mile("k8", "failed", e.message); log(`MCP 8-K Events unavailable: ${e.message}`); }
 
         // Proxy data + peer benchmarks → Governance pane (fire and forget, non-blocking).
         // Neither applies to a private company — no proxy filings, and SIC-peer
@@ -1791,6 +1859,7 @@ function App() {
         setGovLoading(true);
         setGovFetchError(null);
         setGovPeerError(null);
+        ["proxy", "comment", "rfc", "peers"].forEach(k => mile(k, "active"));
         const _peerPromise = (_peerP = MCP.fetchPeerBenchmarks(cfg.ticker));
         _proxyPromise = MCP.fetchProxyData(cfg.ticker);
         _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
@@ -1826,10 +1895,15 @@ function App() {
         // were fire-and-forget and never reached the register at all.
         if (!isPrivateTicker) {
           setLiveStatus("Waiting for DEF 14A / SEC comment letters…");
-          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _rfPromise, _peerP,
+          // Each source is folded into the register (and checked off) the moment it lands.
+          const _govMile = { proxy: "proxy", comment: "comment", rf: "rfc", peers: "peers" };
+          await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _rfPromise, _peerP,
             { grossMargin: mcpResult.financial_ratios?.gross_margin, revGrowth: mcpResult.financial_ratios?.revenue_growth,
               mscore: mcpResult.beneish_mscore?.m_score, zscore: mcpResult.altman_zscore?.z_score },
-            _evidenceGaps, _eventRouting));
+            _evidenceGaps, _eventRouting, 90000, (key, r) => {
+              if (r.map) { evidenceMaps.push(r.map); publishIntake(evidenceMaps, currentRssSignals); }
+              mile(_govMile[key], r.ok ? "done" : "failed", r.detail);
+            });
         } else {
           _evidenceGaps.push("Private company: no SEC filings, proxy or comment letters — filing-based categories are Not assessed");
         }
@@ -1868,6 +1942,7 @@ function App() {
         log(`Profile: ${templateProfile.entity.name} · ${industry} · ${allRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
+        mile("fa", "failed", e.message);
         log(`MCP error: ${e.message} · no analysis data available`);
         setLiveStatus(`MCP unavailable: ${e.message}`);
         // There is no placeholder register: with no data
@@ -1907,6 +1982,7 @@ function App() {
           currentRssSignals = freshSigs;
           setRssSignals(freshSigs);
           setRssLastUpdated(Date.now());
+          mile("rss", "done", `${freshSigs.length} signals`);
           log(`RSS: ${freshSigs.length} signals graded from ${ingestResult.filter(r => r.fetchStatus === "ok").length} live feeds`);
         } catch(e) {
           setRssRunProgress(null);
@@ -2032,6 +2108,8 @@ function App() {
     }
 
     // STAGE 1 — Signal Intake
+    settleMilestones();
+    publishIntake(profileRef.current?.evidenceMaps || [], currentRssSignals);
     const mockSigs = profileRef.current.signals.filter((s) =>
       s.src === "EDGAR 10-K" && signalSet.has("edgar") ||
       s.src === "Peer 10-K" && signalSet.has("peers") ||
@@ -2365,6 +2443,8 @@ function App() {
   }
 
   function resetAll() {
+    setLoopProgress(null);
+    setIntake(null);
     setStageState({});
     setOutput({});
     setGateState({ g1: null, g2: null });
@@ -2768,6 +2848,7 @@ function App() {
               <button className="btn btn-acc" disabled={running} onClick={runLoop}>
                 {running ? <><span className="spin"/> Running loop…</> : <><Icon name="play" size={12}/> Run Loop</>}
               </button>
+              <LoopScheduleControl schedule={loopSchedule} onChange={updateSchedule} blockedReason={schedBlocked} ticker={cfg.ticker} />
               <button className="btn" disabled={!hasRun} onClick={() => setReportOpen(true)}><Icon name="doc" size={11}/> Loop Report</button>
               <button className="btn" disabled={!hasRun || !runIdRef.current} onClick={() => setEvidencePackOpen(true)}
                 title={hasRun && !runIdRef.current ? "Evidence Pack requires a DB-persisted run (MCP mode)" : ""}>
@@ -2803,6 +2884,8 @@ function App() {
               }
             </div>
 
+            <LoopProgress progress={loopProgress} stageState={stageState} gateState={gateState} running={running} />
+
             <WhatChangedDigest ticker={cfg.ticker} hasRun={hasRun} />
 
             {/* Sub-tabs — hidden when only one tab exists */}
@@ -2836,6 +2919,8 @@ function App() {
                 rssLastUpdated={rssLastUpdated}
                 rssRefreshing={rssRefreshing}
                 rssRunProgress={rssRunProgress}
+                intake={intake}
+                loopProgress={loopProgress}
                 rssFeeds={RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id))}
                 appetiteLevel={cfg.appetiteLevel || "AMBER"}
                 appetiteThreshold={APPETITE_THRESHOLDS[cfg.appetiteLevel] ?? 7.5}
