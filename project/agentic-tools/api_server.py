@@ -70,6 +70,7 @@ import asyncio
 import concurrent.futures
 import contextvars
 import functools
+import collections
 import logging
 import os
 import threading
@@ -269,6 +270,34 @@ _HEAVY_QUEUE_TIMEOUT = float(os.environ.get("HEAVY_ENDPOINT_QUEUE_TIMEOUT", "90"
 _heavy_semaphore = threading.BoundedSemaphore(_HEAVY_LIMIT) if _HEAVY_LIMIT > 0 else None
 
 
+def _rss_mb() -> Optional[float]:
+    """Resident memory of this process in MB (Linux /proc; None elsewhere)."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)
+    except Exception:
+        pass
+    return None
+
+
+def _release_memory() -> None:
+    """Return freed memory to the OS. Python/glibc keep freed arenas after a large
+    parse, so RSS ratchets up across requests until the container limit kills the
+    process; malloc_trim hands the free pages back. No-op where unavailable."""
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
+_HEAVY_RSS_WARN_MB = float(os.environ.get("HEAVY_ENDPOINT_RSS_WARN_MB", "400"))
+
+
 def _heavy_endpoint(fn):
     """Serialise memory-heavy sync endpoints through a bounded semaphore.
 
@@ -290,10 +319,17 @@ def _heavy_endpoint(fn):
                 detail="Server busy running analytics — too many heavy requests "
                        "in flight. Retry in a few seconds.",
             )
+        before = _rss_mb()
         try:
             return fn(*args, **kwargs)
         finally:
             _heavy_semaphore.release()
+            _release_memory()
+            after = _rss_mb()
+            if after is not None:
+                # One line per heavy call: which endpoint grows the process and by how much.
+                level = logging.WARNING if after >= _HEAVY_RSS_WARN_MB else logging.INFO
+                logger.log(level, "heavy endpoint %s rss %s -> %s MB", fn.__name__, before, after)
     return wrapper
 
 
@@ -1610,6 +1646,7 @@ def health():
         "ai_model_fallback_active": claude_client.get_model_status()["fallback_active"],
         "environment": deploy_env.ENVIRONMENT_NAME,
         "environment_is_dev": deploy_env.IS_DEVELOPMENT,
+        "rss_mb": _rss_mb(),
     }
 
 
@@ -2850,6 +2887,14 @@ def edgar_comment_letters(req: TickerRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# The 10-K diff only changes when a new 10-K is filed, but the loop calls it on
+# every run and each call downloads and parses two multi-MB filings. Cache the
+# result per (current, prior) accession pair so repeat runs cost nothing.
+_RF_CACHE: "collections.OrderedDict[tuple, dict]" = collections.OrderedDict()
+_RF_CACHE_MAX = 16
+_RF_CACHE_LOCK = threading.Lock()
+
+
 @app.post("/edgar/risk-factor-changes")
 @_heavy_endpoint
 def edgar_risk_factor_changes(req: TickerRequest):
@@ -2862,6 +2907,13 @@ def edgar_risk_factor_changes(req: TickerRequest):
         if not filings:
             return {"ticker": req.ticker.upper(), "status": "no_10k", "message": "No 10-K on file for this filer",
                     "changes": [], "removed": [], "unclassified": [], "by_topic": {}, "evidence": {}}
+        key = (filings[0]["accession_number"], filings[1]["accession_number"] if len(filings) > 1 else "")
+        with _RF_CACHE_LOCK:
+            hit = _RF_CACHE.get(key)
+            if hit is not None:
+                _RF_CACHE.move_to_end(key)
+        if hit is not None:
+            return {**hit, "ticker": req.ticker.upper(), "cached": True}
         cur_text = fetch_filing_text(meta["cik"], filings[0]) or ""
         pri_text = fetch_filing_text(meta["cik"], filings[1]) if len(filings) > 1 else ""
         result = risk_factor_intel.analyze(
@@ -2876,6 +2928,10 @@ def edgar_risk_factor_changes(req: TickerRequest):
         result["icfr"] = icfr
         del cur_text, pri_text
         result["ticker"] = req.ticker.upper()
+        with _RF_CACHE_LOCK:
+            _RF_CACHE[key] = result
+            while len(_RF_CACHE) > _RF_CACHE_MAX:
+                _RF_CACHE.popitem(last=False)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

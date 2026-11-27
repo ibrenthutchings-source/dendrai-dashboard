@@ -43,6 +43,9 @@ RUN apt-get update \
 # Production stage — Python 3.12 + nginx (Debian slim)
 # Uses Debian so that scipy/numpy pre-built wheels install without compilation.
 FROM python:3.12-slim AS runner
+# glibc creates a malloc arena per thread; with FastAPI's threadpool that fragments and
+# inflates RSS after big parses. Two arenas is the standard fix for threaded Python.
+ENV MALLOC_ARENA_MAX=2
 
 # Install nginx and git (git is required to clone repos for secret scanning —
 # see secret_scanner_connectors.py) and remove the default conflicting site
