@@ -348,6 +348,55 @@ window.MCP = (function () {
     return _post('/edgar/risk-factor-changes', { ticker });
   }
 
+  // ── Server-side recurring Run Loop ─────────────────────────────────────────
+  async function _del(path) {
+    const res = await fetch(BASE + path, { method: 'DELETE', signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch {}
+      throw new Error(`MCP ${path}: ${res.status} — ${detail}`);
+    }
+    return res.json();
+  }
+  const _tk = (t) => encodeURIComponent(t);
+  async function fetchLoopSchedule(ticker)           { return _get(`/loop-schedule/${_tk(ticker)}`); }
+  async function saveLoopSchedule(ticker, body)      { return _put(`/loop-schedule/${_tk(ticker)}`, body); }
+  async function deleteLoopSchedule(ticker)          { return _del(`/loop-schedule/${_tk(ticker)}`); }
+  async function runLoopScheduleNow(ticker)          { return _post(`/loop-schedule/${_tk(ticker)}/run-now`, {}); }
+  async function fetchMyScheduledReviews(all = false){ return _get(`/loop-schedule/reviews/mine${all ? '?all_pending=true' : ''}`); }
+  async function fetchScheduledReview(id)            { return _get(`/loop-schedule/reviews/${id}/snapshot`, 60_000); }
+  async function resolveScheduledReview(id, resolution) { return _post(`/loop-schedule/reviews/${id}/resolve`, { resolution }); }
+  async function fetchNotifications(unreadOnly = false) { return _get(`/notifications${unreadOnly ? '?unread_only=true' : ''}`); }
+  async function markNotificationsRead(ids = null)   { return _post('/notifications/read', { ids }); }
+
+  /**
+   * An API object for replaying a scheduled run's snapshot through the SAME loop code a live
+   * run uses: every collection call answers from the stored payload instead of the network,
+   * everything else (mappers, history, persistence) is the real thing. A source the scheduled
+   * run could not collect rejects with its recorded reason, so the loop reports the gap exactly
+   * as it would for a live failure. Scoring therefore stays in one place — the browser engine.
+   */
+  function replayApi(snapshot) {
+    const payloads = snapshot?.payloads || {};
+    const errs = Object.fromEntries((snapshot?.errors || []).map(e => [e.source, e.message]));
+    const answer = (key, label) => async () => {
+      if (payloads[key] != null) return payloads[key];
+      throw new Error(`${label} was not collected by the scheduled run${errs[key] ? ` (${errs[key]})` : ''}`);
+    };
+    return Object.assign({}, window.MCP, {
+      fetchFullAnalysis:        answer('full_analysis', 'Financial analysis'),
+      fetchMaterialAccounts:    answer('material_accounts', 'Material accounts'),
+      forecastMaterialAccounts: answer('material_forecasts', 'Material-account forecasts'),
+      fetchRiskFactors:         answer('risk_factors', '10-K risk factors'),
+      fetch8kEvents:            answer('eight_k', '8-K events'),
+      fetchProxyData:           answer('proxy', 'DEF 14A'),
+      fetchCommentLetters:      answer('comments', 'SEC comment letters'),
+      fetchRiskFactorChanges:   answer('rf_changes', '10-K Item 1A changes'),
+      fetchPeerBenchmarks:      answer('peers', 'SIC peers'),
+      ingestRssFeeds:           answer('compliance_rss', 'Compliance RSS feeds'),
+    });
+  }
+
   /** Per-risk score history over prior completed runs: { risks: {risk_ref: [{score,run_at}]} }. */
   async function fetchRiskHistory(ticker) {
     return _get(`/history/runs/${encodeURIComponent(ticker)}/risk-trend?limit=5`);
@@ -1292,6 +1341,9 @@ window.MCP = (function () {
     map8kToCemEvents,
     eightKRoutingSummary,
     fetchCommentLetters,
+    fetchLoopSchedule, saveLoopSchedule, deleteLoopSchedule, runLoopScheduleNow,
+    fetchMyScheduledReviews, fetchScheduledReview, resolveScheduledReview,
+    fetchNotifications, markNotificationsRead, replayApi,
     fetchRiskHistory,
     withRunHistory,
     fetchRiskFactorChanges,

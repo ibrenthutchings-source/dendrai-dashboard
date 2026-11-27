@@ -531,11 +531,12 @@ function App() {
   // built from whatever evidence has arrived so far (shown in Signal Intake).
   const [loopProgress, setLoopProgress] = useState(null);
   const [intake, setIntake] = useState(null);
-  // In-app recurring schedule (per ticker, kept in localStorage; see loop-schedule.js).
-  const [loopSchedule, setLoopScheduleState] = useState(() => LOOP_SCHEDULE.normalize(null));
-  const [schedBlocked, setSchedBlocked] = useState(null);
-  const appOpenedAtRef = useRef(Date.now());
+  // The recurring schedule now lives on the server (see LoopScheduleControl); this app only
+  // REPLAYS the snapshot a scheduled run collected when a reviewer opens it.
   const runLoopRef = useRef(null);
+  const replayRef = useRef(null);
+  const scheduledReviewIdRef = useRef(null);   // review to close when Gate 1 is decided                 // snapshot being replayed by the current run, if any
+  const [pendingReplay, setPendingReplay] = useState(null);
   const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
   // ---- Narrative analysis results (from S1 AI extract, fed to Gate 1 context) ----
@@ -1343,6 +1344,7 @@ function App() {
       log(`Gate ${n} review: APPROVED`);
     }
     setGateState((prev) => ({ ...prev, [`g${n}`]: "approved" }));
+    if (n === 1) closeScheduledReview("approved");
     const res = gateResRef.current[n];
     if (res) {res({ ok: true });delete gateResRef.current[n];}
   };
@@ -1350,44 +1352,64 @@ function App() {
     setOverrideGateNum(n);
     setOverrideOpen(true);
   };
+  // Gate 1 decided on a scheduled run's snapshot: close that review so the owner and manager
+  // stop being reminded. Best-effort — the gate decision itself must never depend on it.
+  const closeScheduledReview = (resolution) => {
+    const id = scheduledReviewIdRef.current;
+    if (!id) return;
+    scheduledReviewIdRef.current = null;
+    MCP.resolveScheduledReview(id, resolution).catch(e => log(`Could not close scheduled review ${id}: ${e.message}`));
+  };
   const confirmOverride = (reason) => {
     const n = overrideGateNum;
     log(`Gate ${n} review: OVERRIDDEN — ${reason}`);
     setGateState((prev) => ({ ...prev, [`g${n}`]: "overridden" }));
+    if (n === 1) closeScheduledReview("overridden");
     setOverrideOpen(false);
     const res = gateResRef.current[n];
     if (res) {res({ ok: false, reason });delete gateResRef.current[n];}
   };
 
-  // Load this ticker's schedule when the ticker changes.
+  // ---- Open a scheduled run's review ----
+  // A scheduled run (server side) collected every input and is waiting at Gate 1. Opening it
+  // loads that snapshot, applies the run's options, then replays it through the normal loop —
+  // same scorer, same stages, same gate — so the reviewer sees exactly the data of that moment.
+  async function openScheduledReview(reviewId) {
+    try {
+      const rv = await MCP.fetchScheduledReview(reviewId);
+      const snap = rv.snapshot;
+      if (!snap?.payloads?.full_analysis) throw new Error("the snapshot has no financial analysis");
+      const o = snap.options || {};
+      setActiveScreen("pipeline");
+      if (Array.isArray(o.signals) && o.signals.length) setSignalSet(new Set(o.signals));
+      if (Array.isArray(o.rssEnabledFeeds)) setRssEnabledFeeds(o.rssEnabledFeeds);
+      setCfg(c => ({ ...c, ticker: rv.ticker, ...(o.industry ? { industry: o.industry } : {}), ...(o.appetiteLevel ? { appetiteLevel: o.appetiteLevel } : {}) }));
+      setPendingReplay({ reviewId, ticker: rv.ticker, snapshot: snap, collectedAt: snap.collected_at });
+    } catch (e) {
+      log(`Could not open scheduled review ${reviewId}: ${e.message}`);
+      alert(`Could not open that review: ${e.message}`);
+    }
+  }
+  // Start the replay only once cfg.ticker has actually changed (runLoop reads it from this render).
   useEffect(() => {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(LOOP_SCHEDULE.storageKey(cfg.ticker)) || "null"); } catch { /* corrupt entry → defaults */ }
-    setLoopScheduleState(LOOP_SCHEDULE.normalize(saved));
-    setSchedBlocked(null);
-  }, [cfg.ticker]);
-
-  // Scheduler tick. Fires the SAME runLoop() a manual click does. It never starts over a
-  // run in progress or a gate awaiting review (runLoop resets the stage / gate state, so
-  // firing then would wipe the reviewer's work) — it postpones and tries again.
+    if (!pendingReplay || running || cfg.ticker !== pendingReplay.ticker) return;
+    const pr = pendingReplay;
+    setPendingReplay(null);
+    runLoopRef.current && runLoopRef.current({ replay: pr.snapshot, reviewId: pr.reviewId });
+  }, [pendingReplay, cfg.ticker, running]);
+  // Notification bell → "Open review", and a ?review=<id> deep link from a Slack / Teams message.
   useEffect(() => {
-    const tick = () => {
-      const st = LOOP_SCHEDULE.dueState(loopSchedule, Date.now(), appOpenedAtRef.current);
-      if (st.reason === "missed-skipped") { updateSchedule(p => ({ ...p, skippedAt: Date.now() })); return; }
-      if (!st.due) { setSchedBlocked(null); return; }
-      if (!cfg.ticker) { setSchedBlocked("no ticker is selected"); return; }
-      if (running) { setSchedBlocked("a run is already in progress"); return; }
-      if (gateState.g1 === "pending" || gateState.g2 === "pending") { setSchedBlocked("a review gate is awaiting sign-off"); return; }
-      setSchedBlocked(null);
-      updateSchedule(p => ({ ...p, lastRunAt: Date.now() }));
-      log(`Scheduled run starting (${LOOP_SCHEDULE.describe(loopSchedule)}${st.reason === "missed" ? " — catching up a missed run" : ""})`);
-      runLoopRef.current && runLoopRef.current();
-    };
-    if (!loopSchedule.enabled) { setSchedBlocked(null); return; }
-    tick();
-    const h = setInterval(tick, 20000);
-    return () => clearInterval(h);
-  }, [loopSchedule, running, gateState, cfg.ticker]);
+    const onOpen = (e) => e.detail?.id && openScheduledReview(e.detail.id);
+    window.addEventListener("dendrai:open-review", onOpen);
+    try {
+      const id = new URLSearchParams(window.location.search).get("review");
+      if (id && /^\d+$/.test(id)) {
+        openScheduledReview(Number(id));
+        window.history.replaceState({}, "", window.location.pathname);   // don't re-open on reload
+      }
+    } catch { /* no URL access — the bell still works */ }
+    return () => window.removeEventListener("dendrai:open-review", onOpen);
+  }, []);
 
   // ---- Run loop ----
   const speed = tweaks.runSpeed || 1;
@@ -1432,15 +1454,11 @@ function App() {
     } catch { /* the draft is a convenience — never let it break the run */ }
   };
 
-  // Persist + apply a schedule change. Functional so the timer and the popover never
-  // overwrite each other's fields.
-  const updateSchedule = (patchOrFn) => setLoopScheduleState(prev => {
-    const next = LOOP_SCHEDULE.normalize(typeof patchOrFn === "function" ? patchOrFn(prev) : { ...prev, ...patchOrFn });
-    try { localStorage.setItem(LOOP_SCHEDULE.storageKey(cfg.ticker), JSON.stringify(next)); } catch { /* storage full / blocked */ }
-    return next;
-  });
-
-  async function runLoop() {
+  async function runLoop(opts) {
+    // onClick passes the click event as `opts`; only an explicit {replay} means a replay.
+    replayRef.current = opts && opts.replay ? opts.replay : null;
+    const replayReviewId = opts && opts.replay ? opts.reviewId : null;
+    scheduledReviewIdRef.current = replayReviewId || null;
     setRunning(true);
     setIntake(null);
     setLoopProgress({
@@ -1477,7 +1495,10 @@ function App() {
     // so every run starts from a clean slate regardless of which mode ran
     // last, not just on an explicit Reset click.
     setLivefacts(null);
-    log("Loop started");
+    log(replayRef.current
+      ? `Replaying the scheduled run collected ${replayRef.current.collected_at || ""} (no new data is fetched; scoring happens now)`
+      : "Loop started");
+    if (replayReviewId) log(`Scheduled review ${replayReviewId} opened for Gate 1`);
     try { await _runLoopBody(); } catch (err) {
       log(`Run error: ${err?.message || err}`);
       setRunning(false);
@@ -1507,13 +1528,16 @@ function App() {
     // run_full_analysis branches on this internally (see build_company_xbrl).
     const isPrivateTicker = cfg.isPrivate || /^PVT-/i.test(cfg.ticker || "");
 
+    // A replay answers every collection call from the stored snapshot; a live run hits the network.
+    const API = replayRef.current ? MCP.replayApi(replayRef.current) : MCP;
+
     if (mcpMode) {
       // ── MCP mode: delegate all ingestion to Python predictive analytics server ──
       setLiveStatus("Calling Python MCP servers…");
       log("MCP: Starting full analysis…");
       try {
         mile("fa", "active", "ratios, scores, forecasts");
-        const mcpResult = await MCP.fetchFullAnalysis(cfg.ticker, {
+        const mcpResult = await API.fetchFullAnalysis(cfg.ticker, {
           industry:      cfg.industry,
           includeRss:   signalSet.has("industry"),
           includeFred:  signalSet.has("fred"),
@@ -1673,10 +1697,10 @@ function App() {
         // everything above has already succeeded by this point.
         try {
           mile("mat", "active");
-          const matResult = await MCP.fetchMaterialAccounts(cfg.ticker);
+          const matResult = await API.fetchMaterialAccounts(cfg.ticker);
           const materialAccts = (matResult?.accounts || []).filter(a => a.is_material);
           if (materialAccts.length) {
-            const fcResult = await MCP.forecastMaterialAccounts(cfg.ticker);
+            const fcResult = await API.forecastMaterialAccounts(cfg.ticker);
             const bundles = fcResult?.forecasts || {};
             const { fcLabels: fcLabelsMA } = RISK_ENGINE.quarterBoundaries();
             const _toQLma = (d) => { if (!d) return null; const [y,m] = d.slice(0,7).split('-').map(Number); return `Q${Math.ceil(m/3)}-${String(y).slice(-2)}`; };
@@ -1762,7 +1786,7 @@ function App() {
             mile("comp", "active");
             const rssFeeds = RSS_ENGINE.FEEDS.filter(f => rssEnabledFeeds.includes(f.id));
             setRssRunProgress({ msg: "Fetching compliance feeds via MCP…", feedsDone: [] });
-            const complianceResult = await MCP.ingestRssFeeds(rssEnabledFeeds, { ticker: cfg.ticker });
+            const complianceResult = await API.ingestRssFeeds(rssEnabledFeeds, { ticker: cfg.ticker });
             // Mark all feeds that came back ok as done for the progress display
             const doneFeedIds = complianceResult.feeds
               .filter(r => r.fetchStatus === "ok")
@@ -1808,7 +1832,7 @@ function App() {
         if (signalSet.has("edgar") && !isPrivateTicker) {
           try {
             mile("rf", "active");
-            const factors = await MCP.fetchRiskFactors(cfg.ticker);
+            const factors = await API.fetchRiskFactors(cfg.ticker);
             _factorsResult = factors;   // snippets are attached after scoring
             mile("rf", "done", `${factors.filings?.length || 0} filings parsed`);
             log(`MCP Risk Factors: ${factors.filings?.length || 0} filings parsed, snippets matched`);
@@ -1818,7 +1842,7 @@ function App() {
         // 8-K material events → seed CEM with real events
         if (!isPrivateTicker) try {
           mile("k8", "active");
-          const eightK = await MCP.fetch8kEvents(cfg.ticker);
+          const eightK = await API.fetch8kEvents(cfg.ticker);
           const cemEvs = MCP.map8kToCemEvents(eightK);
           {
             const rs = MCP.eightKRoutingSummary(eightK);
@@ -1860,12 +1884,12 @@ function App() {
         setGovFetchError(null);
         setGovPeerError(null);
         ["proxy", "comment", "rfc", "peers"].forEach(k => mile(k, "active"));
-        const _peerPromise = (_peerP = MCP.fetchPeerBenchmarks(cfg.ticker));
-        _proxyPromise = MCP.fetchProxyData(cfg.ticker);
-        _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
+        const _peerPromise = (_peerP = API.fetchPeerBenchmarks(cfg.ticker));
+        _proxyPromise = API.fetchProxyData(cfg.ticker);
+        _commentPromise = API.fetchCommentLetters(cfg.ticker);
         // Sequenced after the proxy fetch: both parse multi-MB filings server-side, and
         // running them concurrently is what the heavy-endpoint limiter exists to prevent.
-        _rfPromise = Promise.allSettled([_proxyPromise]).then(() => MCP.fetchRiskFactorChanges(cfg.ticker));
+        _rfPromise = Promise.allSettled([_proxyPromise]).then(() => API.fetchRiskFactorChanges(cfg.ticker));
         Promise.allSettled([_proxyPromise, _peerPromise]).then(([proxyRes, peerRes]) => {
           if (proxyRes.status === "fulfilled") { setGovData(proxyRes.value); setGovFetchError(null); }
           if (peerRes.status  === "fulfilled") { setGovPeerData(peerRes.value); setGovPeerError(null); }
@@ -2848,7 +2872,11 @@ function App() {
               <button className="btn btn-acc" disabled={running} onClick={runLoop}>
                 {running ? <><span className="spin"/> Running loop…</> : <><Icon name="play" size={12}/> Run Loop</>}
               </button>
-              <LoopScheduleControl schedule={loopSchedule} onChange={updateSchedule} blockedReason={schedBlocked} ticker={cfg.ticker} />
+              <LoopScheduleControl ticker={cfg.ticker} runOptions={{
+                industry: cfg.industry, signals: [...signalSet], rssEnabledFeeds, persona: selectedPersona,
+                appetiteLevel: cfg.appetiteLevel, periodBegin: cfg.periodBegin, periodEnd: cfg.periodEnd,
+                includeRss: signalSet.has("industry"), includeFred: signalSet.has("fred"), isPrivate: !!cfg.isPrivate,
+              }} />
               <button className="btn" disabled={!hasRun} onClick={() => setReportOpen(true)}><Icon name="doc" size={11}/> Loop Report</button>
               <button className="btn" disabled={!hasRun || !runIdRef.current} onClick={() => setEvidencePackOpen(true)}
                 title={hasRun && !runIdRef.current ? "Evidence Pack requires a DB-persisted run (MCP mode)" : ""}>
@@ -3920,6 +3948,7 @@ function Header({ cfg, liveMode, mcpMode, livefacts, running, hasRun, entityName
         })()}
       </div>
       <div className="hdr-spacer" />
+      {window.NotificationBell && <window.NotificationBell />}
       <div className="hdr-meta">
         <div className="item">
           <span className={"live-dot" + (running || hasRun ? " on" : "")} />

@@ -255,69 +255,191 @@ export function IntakePanel({ tab, intake, signals, progress }) {
 
 if (typeof window !== "undefined") Object.assign(window, { LoopProgress, IntakePanel, INTAKE_MILESTONES });
 
-// ── In-app recurring schedule ────────────────────────────────────────────────
-// Pure logic lives in loop-schedule.js (tested); this is only the control.
-import { CADENCES, WEEKDAYS, nextRun, describe as describeSchedule, normalize as normalizeSchedule } from "./loop-schedule.js";
+// ── Recurring Run Loop (server-side) ─────────────────────────────────────────
+// The schedule runs on the server whether or not this app is open. When it finishes it
+// raises a pending Gate 1 review and notifies the schedule's owner AND their manager
+// (in-app bell + any Slack / Teams destination subscribed to "review ready").
+import { CADENCES, WEEKDAYS, DEFAULT_SCHEDULE, localTz, describe as describeSchedule, fmtWhen } from "./loop-schedule.js";
 
-const _fmtWhen = (ms) => ms ? new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+const STATUS_TONE = { ok: "var(--green-ink)", partial: "var(--amber-ink)", failed: "var(--red-ink)" };
 
-export function LoopScheduleControl({ schedule, onChange, blockedReason = null, ticker = "" }) {
+export function LoopScheduleControl({ ticker = "", runOptions = {} }) {
   const [open, setOpen] = React.useState(false);
-  const s = normalizeSchedule(schedule);
-  const anchor = Math.max(s.lastRunAt || 0, s.enabledAt || 0, s.skippedAt || 0) || Date.now();
-  const next = s.enabled ? nextRun(s, anchor) : null;
-  const set = (patch) => {
-    const merged = { ...s, ...patch };
-    // Switching on starts the clock now — it must not fire for a slot that already passed.
-    if (patch.enabled === true && !s.enabled) merged.enabledAt = Date.now();
-    if (patch.cadence || patch.time || patch.weekday != null || patch.day != null) merged.enabledAt = Date.now();
-    onChange(normalizeSchedule(merged));
-  };
+  const [sched, setSched] = React.useState(null);        // server copy (null = none saved)
+  const [draft, setDraft] = React.useState({ ...DEFAULT_SCHEDULE });
+  const [state, setState] = React.useState({ loading: false, saving: false, error: null, msg: null });
+  const auth = typeof window !== "undefined" && window.useAuth ? window.useAuth() : null;
+  const hasManager = !!auth?.user?.manager_id;
+  const MCP = typeof window !== "undefined" ? window.MCP : null;
+
+  const load = React.useCallback(async () => {
+    if (!ticker || !MCP?.fetchLoopSchedule) return;
+    setState(s => ({ ...s, loading: true, error: null }));
+    try {
+      const res = await MCP.fetchLoopSchedule(ticker);
+      setSched(res.schedule || null);
+      if (res.schedule) setDraft({ ...DEFAULT_SCHEDULE, ...res.schedule });
+      else setDraft({ ...DEFAULT_SCHEDULE });
+      setState(s => ({ ...s, loading: false }));
+    } catch (e) { setState(s => ({ ...s, loading: false, error: e.message })); }
+  }, [ticker]);
+
+  // Fetch on ticker change and whenever the panel opens (the server may have just run it).
+  React.useEffect(() => { load(); }, [ticker]);
+  React.useEffect(() => { if (open) load(); }, [open]);
+
+  const set = (patch) => setDraft(d => ({ ...d, ...patch }));
+  const dirty = !sched || ["enabled", "cadence", "run_time", "weekday", "day_of_month"].some(k => draft[k] !== sched[k]);
+
+  async function save() {
+    setState({ loading: false, saving: true, error: null, msg: null });
+    try {
+      const res = await MCP.saveLoopSchedule(ticker, {
+        enabled: !!draft.enabled, cadence: draft.cadence, run_time: draft.run_time, weekday: +draft.weekday,
+        day_of_month: +draft.day_of_month, tz: localTz(), options: runOptions,
+      });
+      setSched(res.schedule);
+      setState({ loading: false, saving: false, error: null, msg: "Saved" });
+    } catch (e) { setState({ loading: false, saving: false, error: e.message, msg: null }); }
+  }
+  async function remove() {
+    setState({ loading: false, saving: true, error: null, msg: null });
+    try { await MCP.deleteLoopSchedule(ticker); setSched(null); setDraft({ ...DEFAULT_SCHEDULE }); setState({ loading: false, saving: false, error: null, msg: "Schedule removed" }); }
+    catch (e) { setState({ loading: false, saving: false, error: e.message, msg: null }); }
+  }
+  async function runNow() {
+    setState({ loading: false, saving: true, error: null, msg: null });
+    try {
+      await MCP.runLoopScheduleNow(ticker);
+      setState({ loading: false, saving: false, error: null, msg: "Collection started — you and your manager are notified when it finishes" });
+      setTimeout(load, 4000);
+    } catch (e) { setState({ loading: false, saving: false, error: e.message, msg: null }); }
+  }
+
   const row = { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, fontSize: 12 };
   const lbl = { width: 92, color: "var(--ink-3)", fontSize: 11 };
+  const running = !!sched?.running_since;
+  const active = sched?.enabled;
   return (
     <span style={{ position: "relative", display: "inline-block" }}>
       <button className="btn" onClick={() => setOpen(o => !o)} aria-expanded={open}
-        title={s.enabled ? `${describeSchedule(s)} — runs while this app is open` : "Run the loop automatically on a schedule"}>
-        <span aria-hidden="true">⏱</span> {s.enabled ? `Scheduled · next ${_fmtWhen(next)}` : "Schedule"}
+        title={active ? `${describeSchedule(sched)} — runs on the server` : "Run the loop automatically on a schedule"}>
+        <span aria-hidden="true">⏱</span> {active ? `Scheduled · next ${fmtWhen(sched.next_run_at)}` : "Schedule"}
       </button>
       {open && (
         <div className="stage-detail" role="dialog" aria-label="Loop schedule"
-          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, width: 340, padding: 14,
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, width: 360, padding: 14,
                    background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,.12)" }}>
           <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 10 }}>Recurring Run Loop{ticker ? ` · ${ticker}` : ""}</div>
-          <label style={row}><input type="checkbox" checked={s.enabled} onChange={e => set({ enabled: e.target.checked })} /> <span>Run automatically</span></label>
-          <div style={row}><span style={lbl}>Repeat</span>
-            <select value={s.cadence} onChange={e => set({ cadence: e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
-              {CADENCES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-            </select></div>
-          {s.cadence === "weekly" && (
-            <div style={row}><span style={lbl}>On</span>
-              <select value={s.weekday} onChange={e => set({ weekday: +e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
-                {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+          {!ticker && <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>Select a ticker first.</div>}
+          {ticker && (<>
+            <label style={row}><input type="checkbox" checked={!!draft.enabled} onChange={e => set({ enabled: e.target.checked })} /> <span>Run automatically</span></label>
+            <div style={row}><span style={lbl}>Repeat</span>
+              <select value={draft.cadence} onChange={e => set({ cadence: e.target.value })} style={{ flex: 1 }}>
+                {CADENCES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
               </select></div>
-          )}
-          {(s.cadence === "monthly" || s.cadence === "quarterly") && (
-            <div style={row}><span style={lbl}>Day of month</span>
-              <select value={s.day} onChange={e => set({ day: +e.target.value })} disabled={!s.enabled} style={{ flex: 1 }}>
-                {Array.from({ length: 28 }, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}</option>)}
-              </select></div>
-          )}
-          <div style={row}><span style={lbl}>At (local)</span>
-            <input type="time" value={s.time} onChange={e => e.target.value && set({ time: e.target.value })} disabled={!s.enabled} style={{ flex: 1 }} /></div>
-          <label style={row}><input type="checkbox" checked={s.runIfMissed} onChange={e => set({ runIfMissed: e.target.checked })} disabled={!s.enabled} />
-            <span>If a run was missed while the app was closed, run once when it opens</span></label>
-          <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", lineHeight: 1.6, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
-            {s.enabled ? <>{describeSchedule(s)}<br />Next run: <b>{_fmtWhen(next)}</b></> : "Off"}<br />
-            Last scheduled run: {_fmtWhen(s.lastRunAt)}
-            {blockedReason && <div style={{ color: "var(--amber-ink)", marginTop: 4 }}>Postponed: {blockedReason}</div>}
-          </div>
-          <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
-            Runs inside this app, so it fires while the app is open in a browser tab. A scheduled run still stops at the review gates — nothing is auto-approved — and waits if a gate is already awaiting review.
-          </div>
+            {draft.cadence === "weekly" && (
+              <div style={row}><span style={lbl}>On</span>
+                <select value={draft.weekday} onChange={e => set({ weekday: +e.target.value })} style={{ flex: 1 }}>
+                  {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                </select></div>
+            )}
+            {(draft.cadence === "monthly" || draft.cadence === "quarterly") && (
+              <div style={row}><span style={lbl}>Day of month</span>
+                <select value={draft.day_of_month} onChange={e => set({ day_of_month: +e.target.value })} style={{ flex: 1 }}>
+                  {Array.from({ length: 28 }, (_, i) => i + 1).map(d => <option key={d} value={d}>{d}</option>)}
+                </select></div>
+            )}
+            <div style={row}><span style={lbl}>At</span>
+              <input type="time" value={draft.run_time} onChange={e => e.target.value && set({ run_time: e.target.value })} style={{ flex: 1 }} />
+              <span className="mono" style={{ fontSize: 10, color: "var(--ink-3)" }}>{localTz()}</span></div>
+
+            <div className="mono" style={{ fontSize: 10.5, color: "var(--ink-2)", lineHeight: 1.6, borderTop: "1px dashed var(--line)", paddingTop: 8 }}>
+              {sched ? <>
+                {active ? <>{describeSchedule(sched)}<br />Next run: <b>{fmtWhen(sched.next_run_at)}</b></> : "Saved but switched off"}<br />
+                Owner: {sched.owner_name || "—"}<br />
+                Last run: {fmtWhen(sched.last_run_at)}
+                {sched.last_status && <span style={{ color: STATUS_TONE[sched.last_status] }}> · {sched.last_status}</span>}
+                {running && <span style={{ color: "var(--amber-ink)" }}> · collecting now…</span>}
+                {sched.last_error && <div style={{ color: "var(--red-ink)" }} title={sched.last_error}>{sched.last_error.slice(0, 160)}</div>}
+              </> : "No schedule saved yet"}
+            </div>
+
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              <button className="btn btn-acc btn-sm" onClick={save} disabled={state.saving || !dirty}>{sched ? "Save changes" : "Save schedule"}</button>
+              <button className="btn btn-sm" onClick={runNow} disabled={state.saving || !sched || running} title={sched ? "" : "Save a schedule first"}>Run now</button>
+              {sched && <button className="btn btn-ghost btn-sm" onClick={remove} disabled={state.saving}>Remove</button>}
+            </div>
+            {state.error && <div className="mono" style={{ fontSize: 10.5, color: "var(--red-ink)", marginTop: 6 }}>{state.error}</div>}
+            {state.msg && <div className="mono" style={{ fontSize: 10.5, color: "var(--green-ink)", marginTop: 6 }}>{state.msg}</div>}
+
+            <div style={{ fontSize: 10.5, color: "var(--ink-3)", marginTop: 10, lineHeight: 1.5 }}>
+              Runs on the server — no browser needs to be open. It collects this ticker's data with the signal sources
+              selected now, then waits for Gate 1; nothing is auto-approved.
+              <br /><b>Notified when ready:</b> you{hasManager ? " and your immediate manager" : ""}
+              {!hasManager && <span style={{ color: "var(--amber-ink)" }}> — no manager is set on your profile, so only you will be notified</span>}
+              , in-app and in any Slack / Teams destination subscribed to "Review ready" (Report Delivery).
+            </div>
+          </>)}
         </div>
       )}
     </span>
   );
 }
-if (typeof window !== "undefined") Object.assign(window, { LoopScheduleControl });
+
+// ── Notification bell ────────────────────────────────────────────────────────
+// Polls the in-app notification feed. "Open review" asks the app to replay that scheduled
+// run's snapshot (the app listens for the dendrai:open-review event).
+export function NotificationBell() {
+  const [open, setOpen] = React.useState(false);
+  const [data, setData] = React.useState({ notifications: [], unread: 0 });
+  const MCP = typeof window !== "undefined" ? window.MCP : null;
+  const refresh = React.useCallback(async () => {
+    if (!MCP?.fetchNotifications) return;
+    try { setData(await MCP.fetchNotifications(false)); } catch { /* signed out / offline — keep the last view */ }
+  }, []);
+  React.useEffect(() => {
+    refresh();
+    const h = setInterval(refresh, 60000);
+    return () => clearInterval(h);
+  }, []);
+  const openReview = async (n) => {
+    setOpen(false);
+    try { await MCP.markNotificationsRead([n.id]); } catch { /* non-fatal */ }
+    refresh();
+    if (n.review_id) window.dispatchEvent(new CustomEvent("dendrai:open-review", { detail: { id: n.review_id } }));
+  };
+  const markAll = async () => { try { await MCP.markNotificationsRead(null); } catch { /* non-fatal */ } refresh(); };
+  const unread = data.unread || 0;
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button className="btn btn-ghost btn-sm" onClick={() => { setOpen(o => !o); if (!open) refresh(); }}
+        aria-label={`Notifications${unread ? `, ${unread} unread` : ""}`} aria-expanded={open} style={{ position: "relative" }}>
+        <span aria-hidden="true">🔔</span>
+        {unread > 0 && <span className="mono" style={{ position: "absolute", top: -4, right: -4, minWidth: 15, height: 15, borderRadius: 8, background: "var(--red-ink)", color: "#fff", fontSize: 9.5, lineHeight: "15px", textAlign: "center" }}>{unread > 9 ? "9+" : unread}</span>}
+      </button>
+      {open && (
+        <div role="menu" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 40, width: 340, maxHeight: 380, overflowY: "auto",
+                                  background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, boxShadow: "0 6px 24px rgba(0,0,0,.14)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--line)" }}>
+            <b style={{ fontSize: 12 }}>Notifications</b>
+            {unread > 0 && <button className="btn btn-ghost btn-sm" onClick={markAll}>Mark all read</button>}
+          </div>
+          {(data.notifications || []).length === 0 && <div style={{ padding: 14, fontSize: 11.5, color: "var(--ink-3)" }}>Nothing yet. A scheduled run that needs your review will appear here.</div>}
+          {(data.notifications || []).map(n => (
+            <div key={n.id} style={{ padding: "8px 12px", borderBottom: "1px dashed var(--line)", background: n.read_at ? "transparent" : "var(--amber-soft)" }}>
+              <div style={{ fontSize: 12, fontWeight: n.read_at ? 400 : 600 }}>{n.title}</div>
+              <div style={{ fontSize: 11, color: "var(--ink-3)", margin: "2px 0 4px" }}>{n.body}</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span className="mono" style={{ fontSize: 9.5, color: "var(--ink-4)" }}>{fmtWhen(n.created_at)}{n.recipient_role ? ` · as ${n.recipient_role}` : ""}</span>
+                {n.review_id && <button className="btn btn-sm btn-acc" onClick={() => openReview(n)}>Open review</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
+if (typeof window !== "undefined") Object.assign(window, { LoopScheduleControl, NotificationBell });

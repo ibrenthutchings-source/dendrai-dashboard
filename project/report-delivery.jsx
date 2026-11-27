@@ -171,7 +171,16 @@ function RdDestinationForm({ initial, onSaved, onCancel }) {
           <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}>
             <input type="checkbox" checked={artifactTypes.includes("evidence_pack")} onChange={() => toggleArtifactType("evidence_pack")} /> Evidence Pack
           </label>
+          <label style={{ fontSize: 11.5, display: "flex", alignItems: "center", gap: 5 }}
+            title="Notify this channel when a scheduled Run Loop is waiting for Gate 1 review">
+            <input type="checkbox" checked={artifactTypes.includes("review_ready")} onChange={() => toggleArtifactType("review_ready")} /> Review ready (scheduled runs)
+          </label>
         </div>
+        {artifactTypes.includes("review_ready") && !["slack", "msteams"].includes(payloadFormat) && (
+          <div style={{ fontSize: 10.5, color: "var(--amber-ink)", marginTop: 4 }}>
+            Review notifications read best as a Slack or MS Teams card — choose that payload format below.
+          </div>
+        )}
       </div>
       <div style={{ marginBottom: 8 }}>
         <label style={{ fontSize: 10.5, color: "var(--ink-3)", fontWeight: 600, display: "block", marginBottom: 3 }}>Payload format</label>

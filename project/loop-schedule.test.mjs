@@ -1,50 +1,15 @@
 // Run: node loop-schedule.test.mjs
+// Date maths lives on the server (test_loop_schedule_logic.py); this covers the display helpers.
 import assert from "node:assert/strict";
-import { nextRun, dueState, normalize, describe } from "./loop-schedule.js";
+import { describe, fmtWhen, CADENCES, WEEKDAYS } from "./loop-schedule.js";
 
-const L = (y, mo, d, h = 0, mi = 0) => new Date(y, mo - 1, d, h, mi, 0, 0).getTime();   // local time
-const S = (o) => ({ enabled: true, ...o });
-
-// ── nextRun ──
-assert.equal(nextRun(S({ cadence: "daily", time: "08:00" }), L(2026, 11, 27, 7, 0)), L(2026, 11, 27, 8, 0));
-assert.equal(nextRun(S({ cadence: "daily", time: "08:00" }), L(2026, 11, 27, 8, 0)), L(2026, 11, 28, 8, 0), "strictly after");
-// 2026-11-27 is a Friday; next Monday is the 30th
-assert.equal(nextRun(S({ cadence: "weekly", weekday: 1, time: "08:00" }), L(2026, 11, 27, 9, 0)), L(2026, 11, 30, 8, 0));
-assert.equal(nextRun(S({ cadence: "monthly", day: 1, time: "06:30" }), L(2026, 11, 27, 9, 0)), L(2026, 12, 1, 6, 30));
-assert.equal(nextRun(S({ cadence: "quarterly", day: 1, time: "08:00" }), L(2026, 11, 27)), L(2027, 1, 1, 8, 0));
-assert.equal(nextRun(S({ cadence: "quarterly", day: 1, time: "08:00" }), L(2027, 1, 1, 9, 0)), L(2027, 4, 1, 8, 0));
-// "day 31" is clamped so short months are never skipped
-assert.equal(normalize({ day: 31 }).day, 28);
-assert.equal(normalize({ time: "99:99" }).time, "23:59");
-assert.equal(normalize({ time: "garbage" }).time, "08:00");
-assert.equal(normalize({ cadence: "hourly" }).cadence, "weekly");
-
-// ── dueState ──
-const base = S({ cadence: "daily", time: "08:00", lastRunAt: L(2026, 11, 26, 8, 0) });
-assert.equal(dueState(base, L(2026, 11, 27, 7, 59)).due, false, "not yet");
-assert.equal(dueState(base, L(2026, 11, 27, 8, 0), L(2026, 11, 27, 7, 0)).due, true, "slot reached while app open");
-assert.equal(dueState(base, L(2026, 11, 27, 8, 0), L(2026, 11, 27, 7, 0)).reason, "on-time");
-assert.equal(dueState(S({ cadence: "daily", time: "08:00" }), L(2026, 11, 27, 7, 0)).due, false, "off");
-assert.equal(dueState({ ...base, enabled: false }, L(2026, 12, 30)).due, false);
-
-// a fresh schedule never fires the instant it is switched on
-const fresh = S({ cadence: "daily", time: "08:00", enabledAt: L(2026, 11, 27, 9, 0) });
-assert.equal(dueState(fresh, L(2026, 11, 27, 9, 1)).due, false);
-assert.equal(dueState(fresh, L(2026, 11, 28, 8, 0), L(2026, 11, 27, 9, 0)).due, true);
-
-// several slots missed while closed -> exactly one catch-up run, flagged "missed"
-const closed = dueState(base, L(2026, 12, 5, 12, 0), L(2026, 12, 5, 11, 0));
-assert.equal(closed.due, true); assert.equal(closed.reason, "missed");
-// ...unless the user opted out: the slot is skipped and the next one is computed from now
-const skip = dueState({ ...base, runIfMissed: false }, L(2026, 12, 5, 12, 0), L(2026, 12, 5, 11, 0));
-assert.equal(skip.due, false); assert.equal(skip.reason, "missed-skipped");
-assert.equal(skip.next, L(2026, 12, 6, 8, 0));
-// after the skip is recorded it stays quiet until that next slot
-const afterSkip = { ...base, runIfMissed: false, skippedAt: L(2026, 12, 5, 12, 0) };
-assert.equal(dueState(afterSkip, L(2026, 12, 5, 12, 1), L(2026, 12, 5, 11, 0)).due, false);
-// after a run, the anchor moves forward: no immediate re-fire
-const ran = { ...base, lastRunAt: L(2026, 12, 5, 12, 0) };
-assert.equal(dueState(ran, L(2026, 12, 5, 12, 1), L(2026, 12, 5, 11, 0)).due, false);
-
-assert.match(describe(S({ cadence: "weekly", weekday: 1, time: "08:00" })), /Every Monday at 08:00/);
+assert.equal(describe({ cadence: "daily", run_time: "07:30" }), "Every day at 07:30");
+assert.equal(describe({ cadence: "weekly", weekday: 1, run_time: "08:00", tz: "America/Chicago" }), "Every Monday at 08:00 (America/Chicago)");
+assert.equal(describe({ cadence: "monthly", day_of_month: 15, run_time: "06:00" }), "Day 15 of each month at 06:00");
+assert.match(describe({ cadence: "quarterly", day_of_month: 1, run_time: "08:00" }), /Jan \/ Apr \/ Jul \/ Oct/);
+assert.equal(describe(null), "Every Monday at 08:00", "defaults when nothing is saved");
+assert.equal(fmtWhen(null), "—");
+assert.ok(fmtWhen("2026-11-30T14:00:00Z").length > 5);
+assert.equal(CADENCES.length, 4);
+assert.equal(WEEKDAYS[0], "Sunday");
 console.log("loop-schedule.test.mjs: all passed");

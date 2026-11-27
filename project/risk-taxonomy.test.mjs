@@ -134,3 +134,18 @@ console.log("risk-taxonomy tests passed");
   assert.deepEqual(R.peerEvidence({ grossMargin: 0.3 }, null).evidence, {});
 }
 console.log("peer-evidence tests passed");
+
+// ── replayApi: a scheduled run's snapshot answers the loop's collection calls ──
+{
+  const snap = { payloads: { full_analysis: { _db_id: 7, ticker: "NVDA" }, eight_k: { events: [] }, peers: { peers: [] } },
+                 errors: [{ source: "proxy", message: "EDGAR timed out" }] };
+  window.MCP = { ...window.MCP };   // replayApi spreads the live MCP object
+  const api = M.replayApi(snap);
+  assert.equal((await api.fetchFullAnalysis("NVDA"))._db_id, 7, "full analysis answered from the snapshot");
+  assert.deepEqual(await api.fetch8kEvents("NVDA"), { events: [] });
+  await assert.rejects(api.fetchProxyData("NVDA"), /DEF 14A was not collected.*EDGAR timed out/, "a failed source rejects with its recorded reason");
+  await assert.rejects(api.fetchCommentLetters("NVDA"), /SEC comment letters was not collected/, "an absent source rejects too");
+  assert.equal(typeof api.mapRssSignals, "function", "non-collection helpers (mappers, history) stay real");
+  assert.equal(typeof api.fetchRiskHistory, "function");
+  console.log("replayApi tests passed");
+}
