@@ -72,7 +72,18 @@ XBRL_METRICS = {
     ],
     "LongTermDebt": ["LongTermDebt", "LongTermDebtNoncurrent"],
     "OperatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities"],
-    "CapEx": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+    # Filers migrate between capex tags (NVIDIA stopped using the PP&E tag in 2012 and
+    # reports PaymentsToAcquireProductiveAssets), so list every common one:
+    # fetch_xbrl_facts() keeps whichever has the FRESHEST data.
+    "CapEx": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+              "PaymentsToAcquirePropertyPlantAndEquipmentAndIntangibleAssets"],
+    # Liquid securities held alongside cash. Cash-and-equivalents alone makes a cash-rich
+    # issuer that keeps most of it in marketable securities (NVIDIA: ~$10.6B cash vs ~$39.5B
+    # securities) look illiquid. CashAndShortTermInvestments is the combined tag some filers use.
+    "ShortTermInvestments": ["ShortTermInvestments", "MarketableSecuritiesCurrent",
+                             "AvailableForSaleSecuritiesDebtSecuritiesCurrent",
+                             "AvailableForSaleSecuritiesDebtSecurities", "MarketableSecurities"],
+    "CashAndShortTermInvestments": ["CashCashEquivalentsAndShortTermInvestments"],
     "Depreciation": ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"],
     "SharesOutstanding": ["CommonStockSharesOutstanding"],
     "Dividends": ["DividendsCommonStockCash", "PaymentsOfDividendsCommonStock"],
@@ -443,7 +454,12 @@ def fetch_xbrl_facts(cik: str) -> dict:
     result   = {}
 
     for metric, tags in XBRL_METRICS.items():
-        for tag in tags:
+        # Tag choice: the candidate with the FRESHEST observation wins (ties go to the
+        # earlier tag in the list). Taking the first tag that merely EXISTS picked
+        # legacy tags a filer abandoned years ago, so one metric could come from a
+        # stale period while the others were current.
+        best = None   # (latest_end, -index, record)
+        for idx, tag in enumerate(tags):
             if tag not in us_gaap:
                 continue
             concept = us_gaap[tag]
@@ -463,15 +479,18 @@ def fetch_xbrl_facts(cik: str) -> dict:
                 continue
 
             filtered.sort(key=lambda e: e.get("end", ""), reverse=True)
-
-            result[metric] = {
+            record = {
                 "tag": tag,
                 "label": concept.get("label", tag),
                 "description": concept.get("description", "")[:300],
                 "unit": "USD" if "USD" in units else ("shares" if "shares" in units else ""),
                 "data_points": filtered[:48],   # enough for 5yr standalone+cumulative mix
             }
-            break   # found a working tag for this metric
+            rank = (filtered[0].get("end", ""), -idx)
+            if best is None or rank > best[0]:
+                best = (rank, record)
+        if best is not None:
+            result[metric] = best[1]
 
     return result
 

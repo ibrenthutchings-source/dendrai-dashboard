@@ -184,7 +184,7 @@ function EvidenceRoutingReview({ routing, notAssessed = [], risks = [], onAckGat
 
       {dq?.status === "unavailable" && (
         <ERBanner tone="red">
-          <b>No usable data — nothing could be assessed.</b> There is no industry template to fall back to, so every category is “Not assessed”.
+          <b>No usable data — nothing could be assessed.</b> Every category is “Not assessed”.
           Approve is disabled; use Override and record a reason.
           {(dq.gaps || []).map((g, i) => <div key={i}>• {g}</div>)}
         </ERBanner>
@@ -411,7 +411,7 @@ function DecisionBasis({ routing, notAssessed = [], risks = [], gateNum = 1, com
         <div>
           <div className="kicker">Decision basis · how these scores were made</div>
           <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2, maxWidth: 720 }}>
-            No industry templates. Each category is scored from this entity's own evidence:{" "}
+            Each category is scored from this entity's own evidence:{" "}
             <b>score = impact × likelihood</b>, likelihood = 1.0 + Σ evidence points (SEC 8-Ks routed by item, proxy board KRIs, SEC comment letters, XBRL ratios, RSS, FRED).
             A category with no evidence is <b>Not assessed</b>, not given a default.
           </div>

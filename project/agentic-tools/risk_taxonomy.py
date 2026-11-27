@@ -116,7 +116,7 @@ def _frq(r, m, z):
 
 def _liq(r, m, z):
     out = [
-        _lt_tiers(r.get("cash_ratio"), [(0.05, 1.5), (0.10, 0.8)], "Cash / assets"),
+        _lt_tiers(r.get("cash_ratio"), [(0.05, 1.5), (0.10, 0.8)], "Cash + securities / assets"),
         _lt_tiers(r.get("fcf_margin"), [(-0.10, 1.5), (0.0, 0.7)], "FCF margin"),
     ]
     if z and _num(z.get("z_score")) is not None:

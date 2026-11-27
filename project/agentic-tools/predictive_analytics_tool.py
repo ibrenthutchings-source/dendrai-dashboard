@@ -19,6 +19,7 @@ import json
 import math
 import os
 import random
+import re
 import statistics
 import sys
 import time
@@ -157,6 +158,8 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     capex_a  = _a("CapEx")
     assets_a = _a("TotalAssets")
     cash_a   = _a("Cash")
+    sti_a    = _a("ShortTermInvestments")
+    cash_sti_a = _a("CashAndShortTermInvestments")
     ar_a     = _a("AccountsReceivable")
     cur_assets_a = _a("CurrentAssets")
     cur_liab_a   = _a("CurrentLiabilities")
@@ -176,6 +179,17 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     assets_now  = _latest(assets_a)
     assets_prev = _prev(assets_a)
     cash_now  = _latest(cash_a)
+    # Liquid assets = cash + short-term investments / marketable securities. The combined
+    # tag wins when the filer uses it; otherwise add the securities line, but only when it
+    # is for the SAME period as the cash figure (never mix a stale securities balance).
+    liquid_now = _latest(cash_sti_a)
+    if liquid_now is None and cash_now is not None:
+        liquid_now = cash_now
+        if sti_a and cash_a:
+            end_cash = max(cash_a, key=lambda p: p.get("end", "")).get("end")
+            sti_pt = max(sti_a, key=lambda p: p.get("end", ""))
+            if sti_pt.get("end") == end_cash and sti_pt.get("val") is not None:
+                liquid_now = cash_now + sti_pt["val"]
     ar_now    = _latest(ar_a)
     ar_prev   = _prev(ar_a)
     cur_assets_now = _latest(cur_assets_a)
@@ -201,7 +215,7 @@ def compute_financial_ratios(xbrl: dict) -> dict:
     net_margin      = _safe_div(ni_now, rev_now)
     fcf_margin      = _safe_div(fcf_now, rev_now)
     asset_growth    = _safe_div(assets_now - assets_prev, assets_prev) if (assets_now and assets_prev) else None
-    cash_ratio      = _safe_div(cash_now, assets_now)
+    cash_ratio      = _safe_div(liquid_now, assets_now)   # (cash + securities) / assets
 
     # TATA = (NetIncome - CFO) / TotalAssets
     tata = None
@@ -281,6 +295,7 @@ def compute_financial_ratios(xbrl: dict) -> dict:
         "lvgi":               lvgi,
         "assets_now":        assets_now,
         "cash_now":           cash_now,
+        "liquid_now":         liquid_now,
         "net_income_now":     ni_now,
         "operating_cashflow": cfo_now,
         "zscore_x1":          zscore_x1,
@@ -2148,13 +2163,55 @@ def _grade_article(text: str, feed_weight: float) -> dict:
         "rag_status":       rag,
         "top_domain":       top_domain,
         "domain_scores":    {k: round(v, 3) for k, v in domain_scores.items()},
+        # Domains the ARTICLE itself is about (>= 1 keyword hit per 100 words), so a
+        # cyber story on a general news feed still reaches Cybersecurity.
+        "domains_triggered": [d for d, v in sorted(domain_scores.items(), key=lambda kv: -kv[1])[:3] if v >= 1.0],
     }
+
+
+_CORP_SUFFIX = {"inc", "corp", "corporation", "co", "company", "ltd", "limited", "plc", "llc", "lp", "holdings",
+                "holding", "group", "the", "and", "technologies", "technology", "international", "incorporated"}
+
+
+def _company_terms(ticker: str, company_name: str) -> list[str]:
+    """Distinctive words that mean THIS company: the ticker and the name minus legal
+    suffixes. (The previous filter kept every word over two letters, so "Corp" /
+    "Inc" matched "corporate" / "including" and unrelated stories, while a real
+    company mention was needed for ANYTHING to pass — which emptied most feeds.)"""
+    terms = {w for w in re.findall(r"[a-z0-9]+", (company_name or "").lower()) if len(w) >= 3 and w not in _CORP_SUFFIX}
+    if ticker and len(ticker) >= 2:
+        terms.add(ticker.lower())
+    return sorted(terms)
+
+
+_SIC_STOP = {"related", "services", "service", "equipment", "products", "product", "manufacturing", "other",
+             "general", "wholesale", "retail", "miscellaneous", "except", "not", "elsewhere", "classified",
+             "operations", "industries", "industry", "and", "the", "for", "with", "stores", "dealers"}
+
+
+def _industry_terms(sic_description: str) -> list[str]:
+    """Stems (first 6 letters) of the SIC description's content words, so an article
+    about "semiconductors" is recognised as relevant to SIC 3674 (Semiconductors &
+    Related Devices) and one about bank enforcement is not."""
+    words = [w for w in re.findall(r"[a-z]+", (sic_description or "").lower()) if len(w) >= 5 and w not in _SIC_STOP]
+    return sorted({w[:6] for w in words})
+
+
+def _industry_relevant(text: str, stems: list[str]) -> bool:
+    t = text.lower()
+    return any(st in t for st in stems)
+
+
+def _mentions(text: str, terms: list[str]) -> bool:
+    t = text.lower()
+    return any(re.search(r"\b" + re.escape(w) + r"\b", t) for w in terms)
 
 
 def compute_rss_signals(
     ticker: str = "",
     company_name: str = "",
     max_articles: int = 20,
+    sic_description: str = "",
 ) -> dict:
     """
     Fetch configured RSS feeds and grade each article.
@@ -2163,7 +2220,8 @@ def compute_rss_signals(
     if not _HAS_FEEDPARSER:
         return {"error": "feedparser not installed (pip install feedparser)"}
 
-    keyword_filter = [w.lower() for w in (ticker + " " + company_name).split() if len(w) > 2]
+    terms = _company_terms(ticker, company_name)
+    stems = _industry_terms(sic_description)
     all_signals = []
 
     for feed_cfg in RSS_SIGNAL_FEEDS:
@@ -2174,33 +2232,36 @@ def compute_rss_signals(
             all_signals.append({"feed": feed_cfg["name"], "error": str(e)})
             continue
 
+        # Every article is graded and kept, but only a story that is RELEVANT to this
+        # entity carries weight: it names the company (+1 velocity), matches the
+        # entity's industry (SIC description), or is about macro conditions that
+        # affect everyone. Anything else is shown as ambient with velocity 0, so a
+        # bank-enforcement release or an unrelated vendor advisory cannot move a
+        # semiconductor company's register.
         feed_signals = []
         for entry in entries:
             title   = entry.get("title", "")
             summary = entry.get("summary", "")
             text    = (title + " " + summary)
-
-            # Optional: filter to company-relevant articles
-            if keyword_filter:
-                if not any(kw in text.lower() for kw in keyword_filter):
-                    continue
-
-            grade = _grade_article(text, feed_cfg["weight"])
+            grade   = _grade_article(text, feed_cfg["weight"])
+            mentioned = _mentions(text, terms) if terms else False
+            industry = _industry_relevant(text, stems)
+            macro = grade["top_domain"] == "Macro" or "Macro" in grade["domains_triggered"]
+            relevance = "company" if mentioned else "industry" if industry else "macro" if macro else "ambient"
+            if mentioned:
+                grade["velocity"] = min(5, grade["velocity"] + 1)
+            elif relevance == "ambient":
+                grade["velocity"] = 0
+            grade["rag_status"] = "Red" if grade["velocity"] >= 3 else "Amber" if grade["velocity"] >= 2 else "Green"
             feed_signals.append({
                 "title":    title[:120],
                 "date":     entry.get("published", ""),
+                "company_mentioned": mentioned,
+                "relevance_to_entity": relevance,
+                "feed_name": feed_cfg["name"],
                 **grade,
             })
-
-        if not feed_signals and not keyword_filter:
-            for entry in entries:
-                text = (entry.get("title", "") + " " + entry.get("summary", ""))
-                grade = _grade_article(text, feed_cfg["weight"])
-                feed_signals.append({
-                    "title": entry.get("title", "")[:120],
-                    "date":  entry.get("published", ""),
-                    **grade,
-                })
+        feed_signals.sort(key=lambda s: (s["velocity"], s["company_mentioned"], s["relevance_score"]), reverse=True)
 
         rag_counts = {"Red": 0, "Amber": 0, "Green": 0}
         for s in feed_signals:
@@ -2502,6 +2563,7 @@ def run_full_analysis(
     if include_rss:
         result["rss_signals"] = compute_rss_signals(
             ticker=ticker, company_name=result.get("company_name", ""),
+            sic_description=result.get("sic_description", ""),
         )
 
     # ── 10. QoQ Momentum ─────────────────────────────────────────────────────

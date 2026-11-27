@@ -104,3 +104,33 @@ for (const c of R.CATALOG) {
 }
 
 console.log("risk-taxonomy tests passed");
+
+// ── SIC-peer comparison evidence ─────────────────────────────────────────────
+{
+  const peers = [
+    { gross_margin: 0.50, revenue_growth: 0.30, m_score: -2.6, z_score: 2.1 },
+    { gross_margin: 0.35, revenue_growth: 0.00, m_score: -2.7, z_score: 1.7 },
+    { gross_margin: 0.68, revenue_growth: 0.24, m_score: -2.6, z_score: 1.7 },
+    { gross_margin: 0.45, revenue_growth: 0.10, m_score: -2.5, z_score: 1.9 },
+  ];
+  const strong = R.peerEvidence({ grossMargin: 0.71, revGrowth: 0.65, mscore: -1.15, zscore: 12.85 }, peers);
+  assert.equal(strong.n, 4);
+  const pts = (id) => strong.evidence[id][0].points;
+  assert.equal(pts("TX-PRF"), -0.2);      // gross margin well above the peer median
+  assert.equal(pts("TX-REV"), -0.2);      // growth well above the peer median
+  assert.equal(pts("TX-FRQ"), 0.3);       // M-score >= 1.0 worse than peers
+  assert.equal(pts("TX-LIQ"), -0.2);      // Z'' far above peers
+  assert(strong.evidence["TX-PRF"][0].label.includes("SIC peers median"));
+
+  const weak = R.peerEvidence({ grossMargin: 0.30, revGrowth: -0.12, mscore: -2.6, zscore: 0.5 }, peers);
+  assert.equal(weak.evidence["TX-PRF"][0].points, 0.8);
+  assert.equal(weak.evidence["TX-REV"][0].points, 0.8);
+  assert.equal(weak.evidence["TX-LIQ"][0].points, 0.5);
+  assert.equal(weak.evidence["TX-FRQ"][0].points, 0.0);
+
+  // fewer than 3 peers with a metric -> no comparison for it (never a default)
+  assert.deepEqual(R.peerEvidence({ grossMargin: 0.3 }, peers.slice(0, 2)).evidence, {});
+  assert.deepEqual(R.peerEvidence({}, peers).evidence, {});
+  assert.deepEqual(R.peerEvidence({ grossMargin: 0.3 }, null).evidence, {});
+}
+console.log("peer-evidence tests passed");

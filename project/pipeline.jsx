@@ -1359,8 +1359,8 @@ function buildSubSteps(stageId, output, signals = [], livefacts, s1Extra, s2Extr
     const highVel    = risks.filter(r => r.velocity >= 3);
     return [
       {
-        label: `${risks.length} risks loaded from industry template`,
-        detail: `Inherent scores and control environment assigned — base register ready for signal overlay`,
+        label: `${risks.length} risks scored from the entity's own evidence`,
+        detail: `Inherent scores and control environment derived from filings, ratios and events — signals are overlaid next`,
         children: risks.slice(0, 5).map(r => `${r.id} · ${r.name} — inherent ${r.inherent?.toFixed(1) ?? "—"}`),
       },
       fredContr > 0 ? {

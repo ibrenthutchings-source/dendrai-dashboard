@@ -130,8 +130,8 @@ function buildSignalEvidence(allSigs, rssSigs) {
 // Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
 // evidence in. A timeout or failure is recorded as an evidence gap — the
 // affected categories then stay "Not assessed" rather than getting a default.
-async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, timeoutMs = 90000) {
-  const waits = [proxyP, commentP, rfP].map(p => p || Promise.reject(new Error("not requested")));
+async function awaitGovernanceEvidence(proxyP, commentP, rfP, peerP, subject, gaps, sink = {}, timeoutMs = 90000) {
+  const waits = [proxyP, commentP, rfP, peerP].map(p => p || Promise.reject(new Error("not requested")));
   const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
   const settled = await Promise.race([Promise.allSettled(waits), timeout]);
   if (settled === "timeout") {
@@ -139,7 +139,7 @@ async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, t
     return [];
   }
   const maps = [];
-  const [pr, cr, rr] = settled;
+  const [pr, cr, rr, pe] = settled;
   if (pr.status === "fulfilled") {
     const ev = pr.value?.governance?.evidence;
     sink.governanceKris = pr.value?.governance?.kris || null;
@@ -155,6 +155,12 @@ async function awaitGovernanceEvidence(proxyP, commentP, rfP, gaps, sink = {}, t
     if (rr.value?.evidence && Object.keys(rr.value.evidence).length) maps.push(rr.value.evidence);
     if (rr.value && rr.value.status !== "ok") gaps.push(`10-K Item 1A: ${rr.value.message || rr.value.status}`);
   } else if (rr.reason?.message !== "not requested") gaps.push(`10-K Item 1A comparison unavailable: ${rr.reason?.message || "error"}`);
+  if (pe.status === "fulfilled") {
+    const pc = RISK_ENGINE.peerEvidence(subject, pe.value?.peers, `SIC ${pe.value?.sic || ""} peers`.replace("  ", " "));
+    sink.peerComparison = { ...pc, source: pe.value?.peer_source || "SIC peers" };
+    if (Object.keys(pc.evidence).length) maps.push(pc.evidence);
+    else gaps.push(`SIC peer comparison: ${pe.value?.peers?.length || 0} peer(s) with data — need at least 3 per metric, so no industry comparison was scored`);
+  } else if (pe.reason?.message !== "not requested") gaps.push(`SIC peer comparison unavailable: ${pe.reason?.message || "error"}`);
   return maps;
 }
 
@@ -1386,7 +1392,7 @@ function App() {
     // RISK_ENGINE.scoreTaxonomy, so no source can double-count another.
     let _eventRouting = { gateFlags: [], unrouted: [] };
     let _factorsResult = null;
-    let _proxyPromise = null, _commentPromise = null, _rfPromise = null;
+    let _proxyPromise = null, _commentPromise = null, _rfPromise = null, _peerP = null;
     const _evidenceGaps = [];
 
     // Private companies (synthetic PVT-<SLUG> ticker, see PrivateCompanyForm /
@@ -1630,7 +1636,9 @@ function App() {
         if (mcpResult.rss_signals && signalSet.has("industry")) {
           const rssSigs = MCP.mapRssSignals(mcpResult, catalogRows);
           currentRssSignals = rssSigs;
-          log(`MCP RSS industry: ${rssSigs.length} signals`);
+          setRssSignals(currentRssSignals);
+          setRssLastUpdated(Date.now());
+          log(`MCP RSS industry: ${rssSigs.length} signals (${rssSigs.filter(s => (s.velocity || 0) > 0).length} relevant to this entity)`);
         }
 
         // Compliance RSS (BIS/CISA/SEC/Fed/EPA) — server-side cached, supplement industry signals
@@ -1724,7 +1732,7 @@ function App() {
         setGovLoading(true);
         setGovFetchError(null);
         setGovPeerError(null);
-        const _peerPromise = MCP.fetchPeerBenchmarks(cfg.ticker);
+        const _peerPromise = (_peerP = MCP.fetchPeerBenchmarks(cfg.ticker));
         _proxyPromise = MCP.fetchProxyData(cfg.ticker);
         _commentPromise = MCP.fetchCommentLetters(cfg.ticker);
         // Sequenced after the proxy fetch: both parse multi-MB filings server-side, and
@@ -1759,7 +1767,10 @@ function App() {
         // were fire-and-forget and never reached the register at all.
         if (!isPrivateTicker) {
           setLiveStatus("Waiting for DEF 14A / SEC comment letters…");
-          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _rfPromise, _evidenceGaps, _eventRouting));
+          evidenceMaps.push(...await awaitGovernanceEvidence(_proxyPromise, _commentPromise, _rfPromise, _peerP,
+            { grossMargin: mcpResult.financial_ratios?.gross_margin, revGrowth: mcpResult.financial_ratios?.revenue_growth,
+              mscore: mcpResult.beneish_mscore?.m_score, zscore: mcpResult.altman_zscore?.z_score },
+            _evidenceGaps, _eventRouting));
         } else {
           _evidenceGaps.push("Private company: no SEC filings, proxy or comment letters — filing-based categories are Not assessed");
         }
@@ -1798,9 +1809,9 @@ function App() {
         log(`Profile: ${templateProfile.entity.name} · ${industry} · ${allRisks.length} risks (MCP-scored)`);
 
       } catch (e) {
-        log(`MCP error: ${e.message} · falling back to industry template`);
-        setLiveStatus(`MCP unavailable: ${e.message} · industry template`);
-        // There is no industry template to fall back to any more: with no data
+        log(`MCP error: ${e.message} · no analysis data available`);
+        setLiveStatus(`MCP unavailable: ${e.message}`);
+        // There is no placeholder register: with no data
         // every category is "Not assessed". Say so loudly (Gate 1 banner,
         // Approve disabled — Override with a reason is the only way through)
         // instead of letting an empty or placeholder register look like a result.
@@ -1863,7 +1874,7 @@ function App() {
       let edgarFin = null;
       let edgarSic = null;
       if (isPrivateTicker) {
-        setLiveStatus("Private company · industry template (switch to MCP mode for manually-uploaded financials)");
+        setLiveStatus("Private company · no SEC data (switch to MCP mode for manually-uploaded financials)");
         log("EDGAR: skipped — private company has no SEC filings");
       } else {
         setLiveStatus("Fetching EDGAR companyfacts…");
@@ -1879,7 +1890,7 @@ function App() {
         } catch(e) {
           edgarFin = null;
           setLivefacts(null);
-          setLiveStatus(`EDGAR unavailable: ${e.message} · industry template`);
+          setLiveStatus(`EDGAR unavailable: ${e.message}`);
           log(`EDGAR unavailable: ${e.message}`);
         }
       }
@@ -1934,7 +1945,7 @@ function App() {
           }
         } catch(e) { /* 8-K fetch optional in Live mode — requires MCP bridge */ }
 
-        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _liveRfP, _evidenceGaps, _eventRouting));
+        _liveMaps.push(...await awaitGovernanceEvidence(_liveProxyP, _liveCommentP, _liveRfP, null, null, _evidenceGaps, _eventRouting));
         {
           const sc = RISK_ENGINE.scoreTaxonomy(_liveMaps);
           const segKeep = (profileRef.current.risks || []).filter(r => r.segment_name);
@@ -2040,7 +2051,7 @@ function App() {
       blockMsg: null,
       dataQuality: _dq,
       // Board rotation / say-on-pay context for the Gate 1 governance card.
-      governance: { kris: _routing.governanceKris || null, boardRotation: _routing.boardRotation || null, sayOnPay: _routing.sayOnPay || null, riskFactors: _routing.riskFactorChanges || null },
+      governance: { kris: _routing.governanceKris || null, boardRotation: _routing.boardRotation || null, sayOnPay: _routing.sayOnPay || null, riskFactors: _routing.riskFactorChanges || null, peers: _routing.peerComparison || null },
     };
     const forcedFlags = routingPayload.gateFlags.filter(f => f.flag === "forces_gate_signoff");
     const stage2Trace = buildTrace({

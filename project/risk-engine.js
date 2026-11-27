@@ -223,7 +223,7 @@ window.RISK_ENGINE = (function () {
       r.mscoreVal != null ? _gt(r.mscoreVal, [[-1.78, 1.5], [-2.22, 0.7]], 'Beneish M-Score', { source: 'Beneish', digits: 2 }) : null,
     ]),
     'TX-LIQ': r => _ok([
-      _lt(r.cashRatio, [[0.05, 1.5], [0.10, 0.8]], 'Cash / assets'),
+      _lt(r.cashRatio, [[0.05, 1.5], [0.10, 0.8]], 'Cash + securities / assets'),
       _lt(r.fcfMargin, [[-0.10, 1.5], [0.0, 0.7]], 'FCF margin'),
       r.zscoreVal != null ? _lt(r.zscoreVal, [[1.1, 2.0], [2.6, 0.8]], "Altman Z''-Score", { source: 'Altman', digits: 2 }) : null,
       _lt(r.wcToAssets, [[0.0, 0.5]], 'Working capital / assets'),
@@ -362,6 +362,57 @@ window.RISK_ENGINE = (function () {
       assessed: true, evidence,
       narrative: narrativeFromEvidence(cat.name, evidence, score),
     };
+  }
+
+
+  // ── SIC-peer comparison ──────────────────────────────────────────────────
+  // Deterministic: the subject's gross margin, revenue growth, Beneish M-score and
+  // Altman Z'' against the MEDIAN of its SIC peers (needs >= MIN_PEERS peers with
+  // that metric). Structural evidence (not "recent change"): it says where the
+  // entity sits against its industry, in either direction.
+  const MIN_PEERS = 3;
+  const _median = (a) => {
+    const v = a.filter(Number.isFinite).sort((x, y) => x - y);
+    if (v.length < MIN_PEERS) return null;
+    const m = v.length >> 1;
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  };
+  function peerEvidence(subject, peers, label = 'SIC peers') {
+    const out = {}, comparison = {};
+    const rows = Array.isArray(peers) ? peers : [];
+    const add = (id, name, fmt, s, med, n, pts, higherIsWorse) => {
+      const diff = s - med;
+      comparison[name] = { subject: s, median: med, n };
+      (out[id] = out[id] || []).push(ev(label,
+        `${name} ${fmt(s)} vs ${label} median ${fmt(med)} (${diff >= 0 ? '+' : ''}${fmt(diff)}; n=${n})`,
+        pts, { observed: { subject: s, median: med, n } }));
+    };
+    const pct = (v) => `${(v * 100).toFixed(1)}%`;
+    const num = (v) => v.toFixed(2);
+    const get = (k) => rows.map(p => p[k]).filter(Number.isFinite);
+    const s = subject || {};
+
+    const gm = _median(get('gross_margin'));
+    if (Number.isFinite(s.grossMargin) && gm != null) {
+      const d = s.grossMargin - gm;
+      add('TX-PRF', 'Gross margin', pct, s.grossMargin, gm, get('gross_margin').length, d <= -0.10 ? 0.8 : d <= -0.05 ? 0.4 : d >= 0.05 ? -0.2 : 0.0);
+    }
+    const rg = _median(get('revenue_growth'));
+    if (Number.isFinite(s.revGrowth) && rg != null) {
+      const d = s.revGrowth - rg;
+      add('TX-REV', 'Revenue growth', pct, s.revGrowth, rg, get('revenue_growth').length, d <= -0.10 ? 0.8 : d <= -0.05 ? 0.4 : d >= 0.10 ? -0.2 : 0.0);
+    }
+    const ms = _median(get('m_score'));
+    if (Number.isFinite(s.mscore) && ms != null) {
+      const d = s.mscore - ms;   // higher M-score = worse earnings quality
+      add('TX-FRQ', 'Beneish M-score', num, s.mscore, ms, get('m_score').length, d >= 1.0 ? 0.3 : d >= 0.5 ? 0.15 : d <= -0.5 ? -0.2 : 0.0);
+    }
+    const zs = _median(get('z_score'));
+    if (Number.isFinite(s.zscore) && zs != null) {
+      const d = s.zscore - zs;   // lower Z'' = closer to distress
+      add('TX-LIQ', "Altman Z''", num, s.zscore, zs, get('z_score').length, d <= -1.5 ? 0.5 : d <= -0.75 ? 0.25 : d >= 1.5 ? -0.2 : 0.0);
+    }
+    return { evidence: out, comparison, n: rows.length };
   }
 
   // Ratio evidence for every category (JS mirror of risk_taxonomy._RATIO_RULES).
@@ -1725,7 +1776,7 @@ window.RISK_ENGINE = (function () {
            buildGreySwan, buildScenarios, allocateRiskDollarExposure, applyFairOverridesToMaps,
            buildObjectives, buildMAPs,
            // evidence-scored taxonomy
-           CATALOG, CATALOG_BY_ID, scoreRow, scoreTaxonomy, ratioEvidence, buildRisks, ev, narrativeFromEvidence,
+           CATALOG, CATALOG_BY_ID, scoreRow, scoreTaxonomy, ratioEvidence, peerEvidence, buildRisks, ev, narrativeFromEvidence,
            BASE_LIKELIHOOD, CATEGORY_IMPACT, ragOf, RAG_RED, RAG_AMBER, refreshForRisks };
 
 })();
