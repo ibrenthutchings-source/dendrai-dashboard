@@ -665,6 +665,73 @@ ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS execution_result JSONB;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_approval_tasks_concept_link
     ON approval_tasks (item_ref) WHERE gate_type = 'concept_link' AND run_id IS NULL;
 
+-- ── Server-side recurring Run Loop (loop_schedule_runner.py) ──────────────────
+-- One schedule per ticker. The sweep collects every external input for the
+-- ticker on the schedule (serialised through the heavy-endpoint limiter),
+-- stores the raw payloads as a snapshot, and raises a pending review. The
+-- register is scored by the same deterministic engine the browser uses when
+-- the reviewer opens the snapshot, so nothing is approved or scored twice.
+CREATE TABLE IF NOT EXISTS loop_schedules (
+    id              BIGSERIAL    PRIMARY KEY,
+    ticker          VARCHAR(32)  NOT NULL UNIQUE,
+    enabled         BOOLEAN      NOT NULL DEFAULT TRUE,
+    cadence         VARCHAR(16)  NOT NULL DEFAULT 'weekly',   -- daily | weekly | monthly | quarterly
+    run_time        VARCHAR(5)   NOT NULL DEFAULT '08:00',    -- HH:MM in tz
+    weekday         SMALLINT     NOT NULL DEFAULT 1,          -- 0=Sunday .. 6 (weekly)
+    day_of_month    SMALLINT     NOT NULL DEFAULT 1,          -- 1-28 (monthly / quarterly)
+    tz              VARCHAR(64)  NOT NULL DEFAULT 'UTC',      -- IANA name the times are expressed in
+    options         JSONB        NOT NULL DEFAULT '{}'::jsonb, -- run options captured from the Pipeline config
+    owner_id        BIGINT,                                   -- the user who set it up; notified with their manager
+    owner_name      VARCHAR(128),
+    next_run_at     TIMESTAMPTZ,
+    last_run_at     TIMESTAMPTZ,
+    last_status     VARCHAR(16),                              -- ok | partial | failed
+    last_error      TEXT,
+    last_review_id  BIGINT,
+    running_since   TIMESTAMPTZ,                              -- non-NULL while a collection is in flight (guards double-runs)
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_loop_schedules_due ON loop_schedules (next_run_at) WHERE enabled;
+
+-- A scheduled run waiting for human review (Gate 1). snapshot holds the raw API
+-- payloads the run collected so the reviewer sees exactly the data of that moment.
+CREATE TABLE IF NOT EXISTS scheduled_run_reviews (
+    id               BIGSERIAL    PRIMARY KEY,
+    schedule_id      BIGINT       REFERENCES loop_schedules(id) ON DELETE SET NULL,
+    ticker           VARCHAR(32)  NOT NULL,
+    run_id           INT,
+    status           VARCHAR(16)  NOT NULL DEFAULT 'pending',  -- pending | resolved | expired
+    snapshot         JSONB,
+    collection_errors JSONB,
+    owner_id         BIGINT,
+    manager_id       BIGINT,
+    reminders_sent   INT          NOT NULL DEFAULT 0,
+    last_reminded_at TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    resolved_at      TIMESTAMPTZ,
+    resolved_by      BIGINT,
+    resolution       VARCHAR(16)                                -- approved | overridden | dismissed | expired
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_reviews_pending ON scheduled_run_reviews (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_scheduled_reviews_ticker ON scheduled_run_reviews (ticker, created_at DESC);
+
+-- In-app notifications (one row per recipient). The webhook side is logged in
+-- observability.report_deliveries, like every other outbound send.
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id          BIGSERIAL    PRIMARY KEY,
+    user_id     BIGINT       NOT NULL,
+    kind        VARCHAR(32)  NOT NULL,                -- review_ready | review_reminder | schedule_failed
+    recipient_role VARCHAR(16),                       -- owner | manager
+    title       VARCHAR(255) NOT NULL,
+    body        TEXT,
+    link        VARCHAR(255),
+    review_id   BIGINT,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    read_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications (user_id, read_at, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS audit_objectives (
     id                      SERIAL PRIMARY KEY,
     run_id                  INT         NOT NULL REFERENCES risk_loop_runs(id),
@@ -16757,3 +16824,298 @@ def get_all_pac_hooks() -> dict:
                     for row in cur.fetchall()
                 }
     return _run(_do) or {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Server-side recurring Run Loop: schedules, scheduled-run reviews, notifications
+# (loop_schedule_runner.py / loop_schedule_endpoints.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCHEDULE_COLS = ("id, ticker, enabled, cadence, run_time, weekday, day_of_month, tz, options, owner_id, "
+                  "owner_name, next_run_at, last_run_at, last_status, last_error, last_review_id, "
+                  "running_since, created_at, updated_at")
+# A collection that has been "running" this long is presumed dead (process killed
+# mid-run) and may be claimed again rather than blocking the schedule forever.
+SCHEDULE_STALE_CLAIM_MINUTES = 120
+
+
+def _rows(cur) -> list:
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def get_loop_schedule(ticker: str) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_SCHEDULE_COLS} FROM loop_schedules WHERE ticker = %s", (ticker.upper(),))
+                rows = _rows(cur)
+                return rows[0] if rows else None
+    return _run(_do)
+
+
+def upsert_loop_schedule(ticker: str, *, enabled: bool, cadence: str, run_time: str, weekday: int,
+                         day_of_month: int, tz: str, options: dict, owner_id: Optional[int],
+                         owner_name: Optional[str], next_run_at) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO loop_schedules (ticker, enabled, cadence, run_time, weekday, day_of_month, tz,
+                                                options, owner_id, owner_name, next_run_at)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        enabled = EXCLUDED.enabled, cadence = EXCLUDED.cadence, run_time = EXCLUDED.run_time,
+                        weekday = EXCLUDED.weekday, day_of_month = EXCLUDED.day_of_month, tz = EXCLUDED.tz,
+                        options = EXCLUDED.options, owner_id = EXCLUDED.owner_id, owner_name = EXCLUDED.owner_name,
+                        next_run_at = EXCLUDED.next_run_at, updated_at = NOW()
+                    RETURNING {_SCHEDULE_COLS}
+                    """,
+                    (ticker.upper(), enabled, cadence, run_time, weekday, day_of_month, tz,
+                     Json(options or {}), owner_id, owner_name, next_run_at),
+                )
+                return _rows(cur)[0]
+    return _run(_do)
+
+
+def delete_loop_schedule(ticker: str) -> bool:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM loop_schedules WHERE ticker = %s", (ticker.upper(),))
+                return cur.rowcount > 0
+    return bool(_run(_do, default=False))
+
+
+def list_due_loop_schedules(limit: int = 5) -> list:
+    """Enabled schedules whose slot has arrived and that are not mid-collection
+    (or whose claim is stale). Oldest slot first; small limit — collections are heavy."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_SCHEDULE_COLS} FROM loop_schedules
+                    WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= NOW()
+                      AND (running_since IS NULL OR running_since < NOW() - make_interval(mins => %s))
+                    ORDER BY next_run_at LIMIT %s
+                    """,
+                    (SCHEDULE_STALE_CLAIM_MINUTES, limit),
+                )
+                return _rows(cur)
+    return _run(_do, default=[]) or []
+
+
+def claim_loop_schedule(schedule_id: int) -> bool:
+    """Atomically take the schedule for a run. False if another worker/tick holds it —
+    this is what stops two uvicorn workers (or a tick overlapping a Run-now) from
+    collecting the same ticker twice."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE loop_schedules SET running_since = NOW()
+                    WHERE id = %s AND (running_since IS NULL OR running_since < NOW() - make_interval(mins => %s))
+                    """,
+                    (schedule_id, SCHEDULE_STALE_CLAIM_MINUTES),
+                )
+                return cur.rowcount == 1
+    return bool(_run(_do, default=False))
+
+
+def finish_loop_schedule(schedule_id: int, *, status: str, error: Optional[str], review_id: Optional[int],
+                         next_run_at) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE loop_schedules SET running_since = NULL, last_run_at = NOW(), last_status = %s,
+                           last_error = %s, last_review_id = COALESCE(%s, last_review_id),
+                           next_run_at = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (status, (error or None) and error[:1000], review_id, next_run_at, schedule_id),
+                )
+    _run(_do)
+
+
+def create_scheduled_review(*, schedule_id: Optional[int], ticker: str, run_id: Optional[int], snapshot: dict,
+                            collection_errors: list, owner_id: Optional[int], manager_id: Optional[int]) -> Optional[int]:
+    """New pending review. An older still-pending review for the same ticker is
+    expired first: the newer run supersedes it, so the reviewer is never asked to
+    sign off on two competing versions of one ticker's register."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE scheduled_run_reviews SET status = 'expired', resolution = 'expired', resolved_at = NOW(),
+                              snapshot = NULL WHERE ticker = %s AND status = 'pending'""",
+                    (ticker.upper(),),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO scheduled_run_reviews (schedule_id, ticker, run_id, snapshot, collection_errors, owner_id, manager_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                    """,
+                    (schedule_id, ticker.upper(), run_id, Json(snapshot, dumps=lambda o: json.dumps(o, default=str)),
+                     Json(collection_errors or []), owner_id, manager_id),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+_REVIEW_META = ("id, schedule_id, ticker, run_id, status, collection_errors, owner_id, manager_id, reminders_sent, "
+                "last_reminded_at, created_at, resolved_at, resolved_by, resolution")
+
+
+def get_scheduled_review(review_id: int, include_snapshot: bool = False) -> Optional[dict]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT {_REVIEW_META}{', snapshot' if include_snapshot else ''} "
+                            "FROM scheduled_run_reviews WHERE id = %s", (review_id,))
+                rows = _rows(cur)
+                return rows[0] if rows else None
+    return _run(_do)
+
+
+def list_scheduled_reviews(user_id: Optional[int], *, pending_only: bool = True, all_users: bool = False, limit: int = 50) -> list:
+    """Reviews addressed to a user (as the schedule owner or their manager);
+    all_users=True (admin escape hatch, mirroring the approvals inbox) lists every one."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                where, params = [], []
+                if pending_only:
+                    where.append("status = 'pending'")
+                if not all_users:
+                    where.append("(owner_id = %s OR manager_id = %s)")
+                    params += [user_id, user_id]
+                cur.execute(f"SELECT {_REVIEW_META} FROM scheduled_run_reviews "
+                            + ("WHERE " + " AND ".join(where) if where else "")
+                            + " ORDER BY created_at DESC LIMIT %s", (*params, limit))
+                return _rows(cur)
+    return _run(_do, default=[]) or []
+
+
+def list_reviews_needing_reminder(after_hours: float, max_reminders: int) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_REVIEW_META} FROM scheduled_run_reviews
+                    WHERE status = 'pending' AND reminders_sent < %s
+                      AND COALESCE(last_reminded_at, created_at) < NOW() - make_interval(secs => %s)
+                    ORDER BY created_at LIMIT 50
+                    """,
+                    (max_reminders, after_hours * 3600),
+                )
+                return _rows(cur)
+    return _run(_do, default=[]) or []
+
+
+def mark_review_reminded(review_id: int) -> None:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE scheduled_run_reviews SET reminders_sent = reminders_sent + 1, "
+                            "last_reminded_at = NOW() WHERE id = %s", (review_id,))
+    _run(_do)
+
+
+def resolve_scheduled_review(review_id: int, user_id: Optional[int], resolution: str) -> bool:
+    """Close a pending review (approved | overridden | dismissed). The snapshot is
+    dropped — the run itself and its approval trail are the record; the raw payloads
+    are bulky and only needed while the review is open."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE scheduled_run_reviews SET status = 'resolved', resolution = %s, resolved_by = %s,
+                              resolved_at = NOW(), snapshot = NULL
+                       WHERE id = %s AND status = 'pending'""",
+                    (resolution, user_id, review_id),
+                )
+                return cur.rowcount == 1
+    return bool(_run(_do, default=False))
+
+
+def purge_stale_scheduled_reviews(max_age_days: int = 30) -> int:
+    """Expire reviews nobody opened in max_age_days and free their snapshots."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE scheduled_run_reviews SET status = 'expired', resolution = 'expired', resolved_at = NOW(),
+                              snapshot = NULL
+                       WHERE status = 'pending' AND created_at < NOW() - make_interval(days => %s)""",
+                    (max_age_days,),
+                )
+                return cur.rowcount
+    return int(_run(_do, default=0) or 0)
+
+
+def insert_user_notification(user_id: int, kind: str, title: str, body: str, link: str,
+                             review_id: Optional[int], recipient_role: Optional[str]) -> Optional[int]:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO user_notifications (user_id, kind, recipient_role, title, body, link, review_id)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (user_id, kind, recipient_role, title[:255], body, link[:255], review_id),
+                )
+                return cur.fetchone()[0]
+    return _run(_do)
+
+
+def list_user_notifications(user_id: int, unread_only: bool = False, limit: int = 30) -> list:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, kind, recipient_role, title, body, link, review_id, created_at, read_at "
+                    "FROM user_notifications WHERE user_id = %s" + (" AND read_at IS NULL" if unread_only else "")
+                    + " ORDER BY created_at DESC LIMIT %s", (user_id, limit))
+                return _rows(cur)
+    return _run(_do, default=[]) or []
+
+
+def count_unread_notifications(user_id: int) -> int:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM user_notifications WHERE user_id = %s AND read_at IS NULL", (user_id,))
+                return cur.fetchone()[0]
+    return int(_run(_do, default=0) or 0)
+
+
+def mark_notifications_read(user_id: int, ids: Optional[list] = None) -> int:
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                if ids:
+                    cur.execute("UPDATE user_notifications SET read_at = NOW() WHERE user_id = %s AND read_at IS NULL "
+                                "AND id = ANY(%s)", (user_id, list(ids)))
+                else:
+                    cur.execute("UPDATE user_notifications SET read_at = NOW() WHERE user_id = %s AND read_at IS NULL",
+                                (user_id,))
+                return cur.rowcount
+    return int(_run(_do, default=0) or 0)
+
+
+def list_active_destinations_for(artifact_type: str) -> list:
+    """Active report destinations subscribed to an artifact type, WITH decrypted
+    credentials — for server-initiated sends (the scheduler has no user session)."""
+    def _do():
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM observability.report_destinations WHERE active AND %s = ANY(artifact_types) ORDER BY id",
+                            (artifact_type,))
+                return [r[0] for r in cur.fetchall()]
+    ids = _run(_do, default=[]) or []
+    return [d for d in (get_report_destination(i, include_credentials=True) for i in ids) if d]

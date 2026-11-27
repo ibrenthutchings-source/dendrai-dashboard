@@ -54,7 +54,9 @@ router = APIRouter(prefix="/report-delivery", tags=["Report Delivery"])
 # screen — same screen gate as evidence_pack_endpoints.router.
 _SCREEN_ID = "pipeline"
 
-_VALID_ARTIFACT_TYPES = {"loop_report", "evidence_pack"}
+# review_ready: the server-side scheduled-run "a Gate 1 review is waiting" notification
+# (loop_schedule_runner.py) — sent to Slack / Teams destinations that subscribe to it.
+_VALID_ARTIFACT_TYPES = {"loop_report", "evidence_pack", "review_ready"}
 _VALID_AUTH_TYPES = {"none", "bearer", "api_key", "basic", "hmac"}
 _VALID_PAYLOAD_FORMATS = {"raw", "slack", "msteams"}
 _VALID_METHODS = {"POST", "PUT"}
@@ -276,6 +278,27 @@ def _shape_payload(payload_format: str, artifact_type: str, payload: Dict[str, A
     the chat-ops case, since neither platform renders an arbitrary JSON
     blob usefully."""
     if payload_format == "raw":
+        return payload
+
+    if artifact_type == "review_ready":
+        # Deliberately carries NO risk data: only that a review is waiting, and where.
+        title = payload.get("title") or "Risk assessment ready for review"
+        text = payload.get("text") or ""
+        link = payload.get("link") or ""
+        who = ", ".join(payload.get("recipients") or [])
+        if payload_format == "slack":
+            att = {"color": "#e8a317", "title": title, "text": text, "footer": "Dendrai Intelligenza",
+                   "fields": ([{"title": "Notified", "value": who, "short": False}] if who else [])}
+            if link.startswith("http"):
+                att["title_link"] = link
+            return {"text": f"{title}" + (f" — <{link}|Open review>" if link.startswith("http") else ""), "attachments": [att]}
+        if payload_format == "msteams":
+            card = {"@type": "MessageCard", "@context": "http://schema.org/extensions", "summary": title,
+                    "themeColor": "e8a317", "title": title,
+                    "text": text + ("\n\nNotified: " + who if who else "")}
+            if link.startswith("http"):
+                card["potentialAction"] = [{"@type": "OpenUri", "name": "Open review", "targets": [{"os": "default", "uri": link}]}]
+            return card
         return payload
 
     label = "Loop Report" if artifact_type == "loop_report" else "Audit Evidence Pack"

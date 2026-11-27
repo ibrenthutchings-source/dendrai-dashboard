@@ -141,6 +141,8 @@ import pac_endpoints
 import pol_domain_mappings
 import pac_policy_docs
 import approvals_endpoints
+import loop_schedule_endpoints
+import loop_schedule_runner
 import remediation_endpoints
 import evidence_pack_endpoints
 import report_delivery_endpoints
@@ -468,6 +470,7 @@ async def lifespan(application: FastAPI):
         _pac_auto_sync_sweep_task = None
         _itsm_sla_sweep_task = None
         _map_detection_sweep_task = None
+        _loop_schedule_sweep_task = None
         _infra_asset_sweep_task = None
         _vulnerability_sweep_task = None
         _exception_staleness_sweep_task = None
@@ -505,6 +508,7 @@ async def lifespan(application: FastAPI):
                 asyncio.create_task(_multi_tenant_loop(pac_auto_sync_sweep.sweep_once, pac_auto_sync_sweep._TICK_S, "PaC auto-sync sweep")),
                 asyncio.create_task(_multi_tenant_loop(itsm_sla_sweep.sweep_once, itsm_sla_sweep._TICK_S, "ITSM SLA breach sweep")),
                 asyncio.create_task(_multi_tenant_loop(map_detection_sweep.sweep_once, map_detection_sweep._TICK_S, "MAP detection sweep")),
+                asyncio.create_task(_multi_tenant_loop(loop_schedule_runner.sweep_once, loop_schedule_runner._TICK_S, "Scheduled Run Loop sweep")),
             ])
             # Infrastructure Vulnerability & Currency Posture: development
             # environment only. Unlike Exception Management's dev-only gate
@@ -618,6 +622,12 @@ async def lifespan(application: FastAPI):
                 _map_detection_sweep_task = asyncio.create_task(map_detection_sweep.start_sweep())
                 logger.info("MAP detection sweep task started")
 
+            # Recurring Run Loop: collects a ticker's inputs on its schedule and notifies the
+            # owner + manager that a Gate 1 review is waiting — see loop_schedule_runner.py.
+            if db.is_available():
+                _loop_schedule_sweep_task = asyncio.create_task(loop_schedule_runner.start_sweep())
+                logger.info("Scheduled Run Loop sweep task started")
+
             # Infrastructure Vulnerability & Currency Posture: development
             # environment only — see the multi-tenant branch's comment above
             # for why this is gated at task-creation time, not a 404.
@@ -695,6 +705,9 @@ async def lifespan(application: FastAPI):
                         if _map_detection_sweep_task is None:
                             asyncio.create_task(map_detection_sweep.start_sweep())
                             logger.info("MAP detection sweep started after DB reconnect")
+                        if _loop_schedule_sweep_task is None:
+                            asyncio.create_task(loop_schedule_runner.start_sweep())
+                            logger.info("Scheduled Run Loop sweep started after DB reconnect")
                         if _infra_asset_sweep_task is None and deploy_env.IS_DEVELOPMENT:
                             asyncio.create_task(infra_asset_sweep.start_sweep())
                             logger.info("Infra asset/expiry sweep started after DB reconnect")
@@ -717,7 +730,7 @@ async def lifespan(application: FastAPI):
                              _vendor_risk_sweep_task, _ai_governance_sweep_task, _identity_graph_sync_task,
                              _je_testing_sweep_task, _pii_retention_sweep_task,
                              _risk_waiver_sweep_task, _pbc_reminder_sweep_task, _pac_auto_sync_sweep_task,
-                             _itsm_sla_sweep_task, _map_detection_sweep_task,
+                             _itsm_sla_sweep_task, _map_detection_sweep_task, _loop_schedule_sweep_task,
                              _infra_asset_sweep_task, _vulnerability_sweep_task, _exception_staleness_sweep_task,
                              *_multi_tenant_bg_tasks):
                 if _bg_task is not None:
@@ -1113,6 +1126,7 @@ logger.info("Auth router registered at /auth")
 
 # Approval workflow: real 2-stage preparer -> manager review for HITL gates.
 app.include_router(approvals_endpoints.router)
+app.include_router(loop_schedule_endpoints.router)
 app.include_router(remediation_endpoints.router)
 
 # Audit Evidence Pack: one-shot assembly of everything defensible about a run.
