@@ -37,11 +37,14 @@ from edgar_tool import XBRL_METRICS, get_company_info
 
 # ── Optional scipy for p-values ───────────────────────────────────────────────
 
-try:
-    from scipy.stats import pearsonr as _scipy_pearsonr
-    _HAS_SCIPY = True
-except ImportError:
-    _HAS_SCIPY = False
+# Lazy: scipy.stats is ~55 MB resident; only needed when a p-value is computed.
+import importlib.util as _ilu
+_HAS_SCIPY = _ilu.find_spec("scipy") is not None
+
+
+def _scipy_pearsonr(x, y):
+    from scipy.stats import pearsonr
+    return pearsonr(x, y)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

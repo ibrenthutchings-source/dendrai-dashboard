@@ -28,11 +28,20 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-try:
-    import anthropic
-    _HAS_SDK = True
-except ImportError:  # pragma: no cover
-    _HAS_SDK = False
+# Lazy: importing the SDK costs ~35 MB of resident memory per worker, which every
+# request path pays even when no AI call is ever made. find_spec() answers "is it
+# installed" without importing; the module is loaded on first real use.
+import importlib.util as _ilu
+anthropic = None   # populated by _sdk() on first use
+_HAS_SDK = _ilu.find_spec("anthropic") is not None
+
+
+def _sdk():
+    global anthropic
+    if anthropic is None:
+        import anthropic as _a
+        anthropic = _a
+    return anthropic
 
 # Configured default; escalate to Sonnet or Opus per call as needed via `model=`.
 MODEL = os.environ.get("DENDRAI_CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -78,7 +87,7 @@ def get_client() -> Optional["anthropic.Anthropic"]:
         logger.info("ANTHROPIC_API_KEY not set — AI features disabled")
         return None
     try:
-        _client = anthropic.Anthropic()
+        _client = _sdk().Anthropic()
     except Exception as exc:  # pragma: no cover
         logger.error("Anthropic client init failed: %s", exc)
         _client = None
@@ -140,7 +149,7 @@ def _create_message(client: "anthropic.Anthropic", **kwargs) -> Any:
     try:
         with client.messages.stream(**kwargs) as stream:
             return stream.get_final_message()
-    except anthropic.NotFoundError:
+    except _sdk().NotFoundError:
         if model == FALLBACK_MODEL:
             raise  # the fallback itself is retired too — nothing left to try
         logger.error(

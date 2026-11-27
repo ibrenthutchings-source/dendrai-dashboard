@@ -8,6 +8,7 @@ import { RiskApprovalReview } from "./risk-approval.jsx";
 import { EvidenceRoutingReview, DecisionBasis } from "./evidence-routing.jsx";
 import { ScopeApprovalReview } from "./audit-scope-review.jsx";
 import { RunHistoryPanel } from "./run-history.jsx";
+import { LoopProgress, IntakePanel, intakeTabs, ScoringMethodology, forecastRisk } from "./loop-intake.jsx";
 
 const STAGES = [
   { id: "s1", name: "Signal Intake",                       desc: "10-K · peer filings · industry RSS · SEC 8-K · internal KRIs" },
@@ -213,10 +214,11 @@ function Pipeline({ hubFocus, onFocusStage, onFocusGate, onGoHub,
                     peerCompareList = [],
                     peerCompareLoading = false, peerCompareError = null,
                     onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null,
-                    ratios = {}, events = [] }) {
+                    ratios = {}, events = [], intake = null, loopProgress = null }) {
   const threshold = APPETITE_THRESHOLDS[appetiteLevel] ?? 7.5;
   const s1Extra = {
     rssRunProgress,
+    intake, loopProgress, liveRssSignals,
     rssFeeds: rssFeeds || [],
     ticker: pipelineTicker || output.s1?.ticker || "",
     narrativeResult,
@@ -1631,16 +1633,14 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
     return <Empty>Awaiting gate approval — review and confirm the previous stage before this one runs.</Empty>;
   }
   if (status === "running") {
-    if (id === "s1" && s1Extra?.rssRunProgress) {
-      return <S1RunningBody rssRunProgress={s1Extra.rssRunProgress} rssFeeds={s1Extra.rssFeeds || []}/>;
-    }
+    if (id === "s1") return <S1LiveBody s1Extra={s1Extra || {}}/>;
     return (
       <div className="stage-detail">
         <span className="spin"/> Stage running… synthesizing structured output.
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare} intake={s1Extra?.intake} loopProgress={s1Extra?.loopProgress} liveRssSignals={s1Extra?.liveRssSignals}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -1713,6 +1713,26 @@ function SubStepList({ steps }) {
   );
 }
 
+// Stage 1 while it is still running: the inputs that have already arrived are
+// readable right now (RSS detail, draft register, methodology, forecast), instead
+// of a spinner until every source has finished.
+function S1LiveBody({ s1Extra }) {
+  const [tab, setTab] = React.useState("progress");
+  const { intake, loopProgress, liveRssSignals = [], rssRunProgress, rssFeeds = [] } = s1Extra;
+  const tabs = [{ id: "progress", label: "Progress" }, ...intakeTabs(intake, liveRssSignals.length)];
+  return (
+    <div className="stage-body-grid">
+      <CanvasTabs tabs={tabs} active={tab} onChange={setTab}/>
+      {tab === "progress" && (
+        rssRunProgress
+          ? <S1RunningBody rssRunProgress={rssRunProgress} rssFeeds={rssFeeds}/>
+          : <div className="stage-detail"><span className="spin"/> Stage 1 running — sources are being ingested; open a tab to read what has already arrived.</div>
+      )}
+      {tab !== "progress" && <IntakePanel tab={tab} intake={intake} signals={liveRssSignals} progress={loopProgress}/>}
+    </div>
+  );
+}
+
 function S1RunningBody({ rssRunProgress, rssFeeds }) {
   return (
     <div className="stage-detail">
@@ -1752,7 +1772,8 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
                   peerCompareList = [], peerCompareLoading = false, peerCompareError = null,
-                  onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null }) {
+                  onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null,
+                  intake = null, loopProgress = null, liveRssSignals = [] }) {
   // Peer selection / gauge-peer derivation now lives inside FraudDistressPanel
   // and ForecastsPanel (below) — both tabs are rendered through those shared
   // components so Gate 1's review screen can show the same content inline.
@@ -1793,6 +1814,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
 
   const S1_TABS = [
     { id: "overview", label: "Overview" },
+    ...intakeTabs(intake, (liveRssSignals || []).length),
     { id: "signals", label: "Fraud & Distress Signals" },
     { id: "forecasts", label: "Forecasts" },
     ...(aiAvailable ? [{ id: "narrative", label: "AI Narrative" }] : []),
@@ -1889,6 +1911,10 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
       )}
       </>}
 
+      {["rss", "register", "method", "forecast"].includes(activeTab) && (
+        <IntakePanel tab={activeTab} intake={intake} signals={liveRssSignals?.length ? liveRssSignals : signals} progress={loopProgress}/>
+      )}
+
       {activeTab === "signals" && (
         <FraudDistressPanel forecasts={forecasts} peerData={peerData} peerCompareList={peerCompareList} onAddObjective={onAddObjective}/>
       )}
@@ -1960,15 +1986,6 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
 }
 
 const CE_ADJ  = { STRONG: -0.7, ADEQUATE: -0.3, WEAK: 0.1, NONE: 0.4 };
-const CE_MULT = { STRONG: 0.80, ADEQUATE: 0.95, WEAK: 1.10, NONE: 1.20 };
-
-function forecastRisk(risk, quarters = 4) {
-  const mult = CE_MULT[risk.ce] ?? 1.0;
-  return Array.from({ length: quarters }, (_, i) =>
-    +Math.min(25, Math.max(0, risk.score + risk.velocity * mult * Math.pow(0.85, i))).toFixed(1)
-  );
-}
-
 function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefreshing = false,
                   appetiteLevel = "AMBER", appetiteThreshold,
                   perRiskAppetite = {}, setPerRiskAppetite,
@@ -2204,28 +2221,7 @@ function S2Body({ output, liveRssSignals = [], rssLastUpdated = null, rssRefresh
       </div>
       </>}
 
-      {activeTab === "methodology" && (
-      <div className="stage-detail">
-        <h5>Scoring methodology</h5>
-        <div style={{display:"flex", flexDirection:"column", gap:5, fontSize:11, color:"var(--ink-2)"}}>
-          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>Residual score: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-2)"}}>inherent + macro adj. + industry-signal adj. + 8-K adj. + industry adj. − control-effectiveness discount</span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)", marginLeft:12}}>8K_adj: P1 +0.5 · P2 +0.25 · P3 +0.10 per category match (cap +1.5)</span>
-          </div>
-          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>CE discount: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>STRONG −0.7 · ADEQUATE −0.3 · WEAK +0.1 · NONE +0.4</span>
-          </div>
-          <div style={{padding:"6px 10px", background:"var(--surface-2,var(--surface))", borderRadius:5, border:"1px solid var(--line)"}}>
-            <span className="mono" style={{fontSize:10, color:"var(--ink-4)"}}>RAG thresholds: </span>
-            <span className="mono" style={{fontSize:10, color:"var(--red-ink)"}}>RED ≥ 15</span>
-            <span className="mono" style={{fontSize:10, color:"var(--amber-ink)", marginLeft:10}}>AMBER ≥ 9</span>
-            <span className="mono" style={{fontSize:10, color:"var(--green-ink)", marginLeft:10}}>GREEN &lt; 9</span>
-          </div>
-        </div>
-      </div>
-      )}
+      {activeTab === "methodology" && <ScoringMethodology />}
 
       {activeTab === "forecast" && <>
       {/* Quarterly forecast for top risks */}

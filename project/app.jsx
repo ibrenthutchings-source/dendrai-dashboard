@@ -130,37 +130,64 @@ function buildSignalEvidence(allSigs, rssSigs) {
 // Wait (bounded) for the DEF 14A and SEC comment-letter fetches and fold their
 // evidence in. A timeout or failure is recorded as an evidence gap — the
 // affected categories then stay "Not assessed" rather than getting a default.
-async function awaitGovernanceEvidence(proxyP, commentP, rfP, peerP, subject, gaps, sink = {}, timeoutMs = 90000) {
-  const waits = [proxyP, commentP, rfP, peerP].map(p => p || Promise.reject(new Error("not requested")));
-  const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
-  const settled = await Promise.race([Promise.allSettled(waits), timeout]);
-  if (settled === "timeout") {
-    gaps.push(`DEF 14A / SEC comment-letter / 10-K Item 1A fetch did not finish within ${timeoutMs / 1000}s — Governance, Regulatory and risk-factor evidence rest on other sources only`);
-    return [];
-  }
+async function awaitGovernanceEvidence(proxyP, commentP, rfP, peerP, subject, gaps, sink = {}, timeoutMs = 90000, onSource = null) {
+  // Each source is folded in THE MOMENT it settles (onSource fires per source, so the
+  // intake panel and progress bar update live) and evidence that arrived before the
+  // deadline is kept — a slow source no longer discards the ones that finished.
   const maps = [];
-  const [pr, cr, rr, pe] = settled;
-  if (pr.status === "fulfilled") {
-    const ev = pr.value?.governance?.evidence;
-    sink.governanceKris = pr.value?.governance?.kris || null;
-    if (ev && Object.keys(ev).length) maps.push(ev);
-    else gaps.push("DEF 14A retrieved but too few directors could be parsed to score board tenure (needs ≥3) — governance rests on other evidence only");
-  } else if (pr.reason?.message !== "not requested") gaps.push(`DEF 14A unavailable: ${pr.reason?.message || "error"}`);
-  if (cr.status === "fulfilled") {
-    if (cr.value?.evidence && Object.keys(cr.value.evidence).length) maps.push(cr.value.evidence);
-    else gaps.push("No SEC comment-letter activity on file for this filer in the last 36 months — no regulatory-comment evidence either way");
-  } else if (cr.reason?.message !== "not requested") gaps.push(`SEC comment letters unavailable: ${cr.reason?.message || "error"}`);
-  if (rr.status === "fulfilled") {
-    sink.riskFactorChanges = rr.value || null;
-    if (rr.value?.evidence && Object.keys(rr.value.evidence).length) maps.push(rr.value.evidence);
-    if (rr.value && rr.value.status !== "ok") gaps.push(`10-K Item 1A: ${rr.value.message || rr.value.status}`);
-  } else if (rr.reason?.message !== "not requested") gaps.push(`10-K Item 1A comparison unavailable: ${rr.reason?.message || "error"}`);
-  if (pe.status === "fulfilled") {
-    const pc = RISK_ENGINE.peerEvidence(subject, pe.value?.peers, `SIC ${pe.value?.sic || ""} peers`.replace("  ", " "));
-    sink.peerComparison = { ...pc, source: pe.value?.peer_source || "SIC peers" };
-    if (Object.keys(pc.evidence).length) maps.push(pc.evidence);
-    else gaps.push(`SIC peer comparison: ${pe.value?.peers?.length || 0} peer(s) with data — need at least 3 per metric, so no industry comparison was scored`);
-  } else if (pe.reason?.message !== "not requested") gaps.push(`SIC peer comparison unavailable: ${pe.reason?.message || "error"}`);
+  const finished = new Set();
+  let closed = false;   // set at the deadline: a straggler must not alter a register already scored
+  const note = (key, ok, detail, map) => {
+    if (closed) return;
+    finished.add(key);
+    if (map && Object.keys(map).length) maps.push(map);
+    try { onSource && onSource(key, { ok, detail, map: map && Object.keys(map).length ? map : null }); } catch { /* UI callback must never break the run */ }
+  };
+  const track = (key, p, handle) => {
+    if (!p) { finished.add(key); return Promise.resolve(); }
+    return p.then(
+      (value) => handle({ ok: true, value }),
+      (reason) => handle({ ok: false, reason }),
+    );
+  };
+  const jobs = [
+    track("proxy", proxyP, (r) => {
+      if (!r.ok) { gaps.push(`DEF 14A unavailable: ${r.reason?.message || "error"}`); return note("proxy", false, r.reason?.message || "error"); }
+      const ev = r.value?.governance?.evidence;
+      sink.governanceKris = r.value?.governance?.kris || null;
+      if (!(ev && Object.keys(ev).length)) gaps.push("DEF 14A retrieved but too few directors could be parsed to score board tenure (needs ≥3) — governance rests on other evidence only");
+      note("proxy", true, ev && Object.keys(ev).length ? "board rotation scored" : "too few directors parsed", ev);
+    }),
+    track("comment", commentP, (r) => {
+      if (!r.ok) { gaps.push(`SEC comment letters unavailable: ${r.reason?.message || "error"}`); return note("comment", false, r.reason?.message || "error"); }
+      const ev = r.value?.evidence;
+      if (!(ev && Object.keys(ev).length)) gaps.push("No SEC comment-letter activity on file for this filer in the last 36 months — no regulatory-comment evidence either way");
+      note("comment", true, ev && Object.keys(ev).length ? "comment-letter activity scored" : "no activity on file", ev);
+    }),
+    track("rf", rfP, (r) => {
+      if (!r.ok) { gaps.push(`10-K Item 1A comparison unavailable: ${r.reason?.message || "error"}`); return note("rf", false, r.reason?.message || "error"); }
+      sink.riskFactorChanges = r.value || null;
+      if (r.value && r.value.status !== "ok") gaps.push(`10-K Item 1A: ${r.value.message || r.value.status}`);
+      note("rf", !!r.value && r.value.status === "ok", r.value?.status === "ok" ? "year-over-year changes scored" : (r.value?.message || r.value?.status || "no result"), r.value?.evidence);
+    }),
+    track("peers", peerP, (r) => {
+      if (!r.ok) { gaps.push(`SIC peer comparison unavailable: ${r.reason?.message || "error"}`); return note("peers", false, r.reason?.message || "error"); }
+      const pc = RISK_ENGINE.peerEvidence(subject, r.value?.peers, `SIC ${r.value?.sic || ""} peers`.replace("  ", " "));
+      sink.peerComparison = { ...pc, source: r.value?.peer_source || "SIC peers" };
+      if (!Object.keys(pc.evidence).length) gaps.push(`SIC peer comparison: ${r.value?.peers?.length || 0} peer(s) with data — need at least 3 per metric, so no industry comparison was scored`);
+      note("peers", true, Object.keys(pc.evidence).length ? `${r.value?.peers?.length || 0} peers compared` : `${r.value?.peers?.length || 0} peer(s) — need ≥3`, pc.evidence);
+    }),
+  ];
+  const timeout = new Promise(r => setTimeout(() => r("timeout"), timeoutMs));
+  const outcome = await Promise.race([Promise.all(jobs).then(() => "done"), timeout]);
+  if (outcome === "timeout") {
+    closed = true;
+    const late = ["proxy", "comment", "rf", "peers"].filter(k => !finished.has(k));
+    if (late.length) {
+      gaps.push(`${late.join(" / ")} did not finish within ${timeoutMs / 1000}s — the register rests on the sources that did; late results are not scored`);
+      late.forEach(k => { try { onSource && onSource(k, { ok: false, detail: "timed out", map: null }); } catch { /* ignore */ } });
+    }
+  }
   return maps;
 }
 
@@ -499,6 +526,11 @@ function App() {
   const [rssRefreshing, setRssRefreshing] = useState(false);
   // { msg: string, feedsDone: string[] } | null — tracks per-feed progress during pipeline run
   const [rssRunProgress, setRssRunProgress] = useState(null);
+  // Run Loop progress: one entry per data-source milestone (stage / gate milestones are
+  // derived from stageState / gateState in LoopProgress), plus the live draft register
+  // built from whatever evidence has arrived so far (shown in Signal Intake).
+  const [loopProgress, setLoopProgress] = useState(null);
+  const [intake, setIntake] = useState(null);
   const [perRiskAppetite, setPerRiskAppetite] = useState({});
 
   // ---- Narrative analysis results (from S1 AI extract, fed to Gate 1 context) ----
@@ -1350,8 +1382,35 @@ function App() {
     log(`Stage ${id.toUpperCase()} complete`);
   }
 
+  // ---- Run progress + live intake ----
+  const mile = (id, status, note) => setLoopProgress(p => p
+    ? { ...p, items: p.items.map(i => i.id === id ? { ...i, status, note: note ?? i.note } : i) } : p);
+  // Anything still pending/active when ingestion ends did not run in this mode.
+  const settleMilestones = () => setLoopProgress(p => p
+    ? { ...p, items: p.items.map(i => i.status === "pending" || i.status === "active" ? { ...i, status: "skipped", note: i.note || "not run" } : i) } : p);
+  // Same deterministic scorer Stage 2 uses, run over the evidence that has arrived so far.
+  const publishIntake = (maps, sigs) => {
+    try {
+      const sig = buildSignalEvidence(sigs || [], sigs || []);
+      const sc = RISK_ENGINE.scoreTaxonomy([...(maps || []), sig.evidence]);
+      setIntake({ risks: sc.risks, notAssessed: sc.notAssessed, sources: [...(maps || []), ...(Object.keys(sig.evidence).length ? [sig.evidence] : [])], updatedAt: Date.now() });
+    } catch { /* the draft is a convenience — never let it break the run */ }
+  };
+
   async function runLoop() {
     setRunning(true);
+    setIntake(null);
+    setLoopProgress({
+      startedAt: Date.now(),
+      items: INTAKE_MILESTONES.map(m => {
+        const off = (m.id === "rss" && !signalSet.has("industry"))
+          || (m.id === "comp" && (!signalSet.has("industry") || rssEnabledFeeds.length === 0))
+          || (m.id === "fred" && !signalSet.has("fred"))
+          || (["rf", "k8", "proxy", "comment", "rfc", "peers"].includes(m.id) && (cfg.isPrivate || /^PVT-/i.test(cfg.ticker || "")))
+          || (m.id === "rf" && !signalSet.has("edgar"));
+        return { ...m, status: off ? "skipped" : "pending", note: off ? "not applicable / switched off" : undefined };
+      }),
+    });
     setHasRun(false);
     setLoopLog([]);
     runIdRef.current = null;
