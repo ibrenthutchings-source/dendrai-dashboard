@@ -69,8 +69,8 @@ function RiskTable({ risks, selectedId, onSelect }) {
             <th>Risk</th>
             <th style={{width: 38}}>Now</th>
             <th style={{width: 36}}>Vel</th>
-            <th style={{width: 70}}>Trend</th>
-            <th style={{width: 70}}>Control</th>
+            <th style={{width: 66}}>Trend</th>
+            <th style={{width: 62}}>Control</th>
           </tr>
         </thead>
         <tbody>
@@ -90,7 +90,7 @@ function RiskTable({ risks, selectedId, onSelect }) {
                   <td title={r.histSource === "runs"
                     ? `Score over the last ${r.histRuns} run(s) plus this one`
                     : "No prior run for this risk — line shows structural base to current score (recent-change evidence only)"}>
-                    <Sparkline data={r.hist} w={62} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/>
+                    <Sparkline data={r.hist} w={54} h={16} color={scoreColor(r.score)} min={histMin} max={histMax}/>
                     {r.histSource !== "runs" && <span style={{fontSize: 9, color: "var(--ink-4)", marginLeft: 3}}>·</span>}
                   </td>
                   <td><span className="mono" style={{fontSize: 10, color: "var(--ink-3)"}}>{r.ce}</span></td>

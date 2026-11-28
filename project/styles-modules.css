@@ -770,6 +770,7 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
   border-left: 1px solid var(--line);
   display: flex; flex-direction: column;
   min-height: 0;
+  min-width: 0;            /* let the grid column shrink instead of clipping content */
   overflow: hidden;
 }
 .rsb-head {
@@ -777,7 +778,7 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
   padding: 14px 16px 0;
   border-bottom: 1px solid var(--line);
 }
-.rsb-title { display: flex; align-items: center; justify-content: space-between; }
+.rsb-title { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 2px 10px; min-width: 0; }
 .rsb-title .t { font-size: 13px; font-weight: 500; }
 .rtab-bar {
   display: flex; gap: 0; overflow-x: auto;
@@ -792,12 +793,14 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
 .rtab.active { color: var(--ink); border-bottom-color: var(--ink); }
 .rtab:hover { color: var(--ink-2); }
 .rbody {
-  flex: 1; overflow-y: auto;
+  flex: 1; overflow-y: auto; overflow-x: hidden;
+  min-width: 0;
   padding: 14px 16px;
 }
 
 /* risk register table */
-.rtable { width: 100%; border-collapse: collapse; }
+.rtable { width: 100%; border-collapse: collapse; table-layout: fixed; }   /* fixed: the Risk column flexes, the rest keep their width */
+.rtable td { overflow: hidden; }
 .rtable th {
   font-family: "Geist Mono", monospace;
   font-size: 9.5px; letter-spacing: 0.06em;
@@ -816,7 +819,7 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
   vertical-align: middle;
 }
 .rtable tr:hover td { background: var(--surface-2); cursor: pointer; }
-.rtable .risk-name { max-width: 180px; }
+.rtable .risk-name { min-width: 0; overflow-wrap: anywhere; }
 .rtable .risk-name b { font-weight: 500; display: block; line-height: 1.35; }
 .rtable .risk-name .cat { font-size: 10px; color: var(--ink-3); margin-top: 1px; }
 
@@ -3221,3 +3224,8 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
 .board-narrative > summary:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 .board-narrative-body { padding: 0 12px 2px; }
 .board-narrative-body .persona-card { background: var(--surface); }
+
+/* Narrow rail (<=900px, 320px wide): drop the trend sparkline so the risk name keeps room. */
+@media (max-width: 900px) {
+  .rsb .rtable th:nth-child(5), .rsb .rtable td:nth-child(5) { display: none; }
+}

@@ -182,3 +182,22 @@ def test_missing_1c_only_flagged_when_required():
     assert any("No Item 1C" in e["label"] for e in new["evidence"]["TX-CYB"])
     old = r.analyze(_tenk(FACTORS), "", "2022-11-01", today=TODAY)
     assert old["item_1c"] is None and not any(e["source"] == "10-K Item 1C" for e in old["evidence"]["TX-CYB"])
+
+
+def test_extract_ignores_cross_references_and_toc():
+    body = "\n\n".join(
+        [f"Failure to manage risk number {i} could adversely affect our business results." + "\n\n" + ("Detail sentence about the risk. " * 12)
+         for i in range(10)])
+    text = ("Item 1A. Risk Factors 12 Item 1B. Unresolved Staff Comments 30\n\n"          # TOC row
+            "Item 1A. Risk Factors\n\n" + body + "\n\nItem 1B. Unresolved Staff Comments\n\nNone.\n\n"
+            "Item 1C. Cybersecurity\n\nRefer to \"Item 1A. Risk Factors\" for more.\n\n"
+            "Item 7. MD&A\n\n" + ("Revenue grew because of demand. " * 200))
+    sec = r.extract_item_1a(text)
+    assert "number 3" in sec and "Revenue grew" not in sec
+    assert len(r.split_risk_factors(sec)) == 10
+
+
+def test_group_banners_and_leadins_are_not_factors():
+    assert not r._is_heading("Risks Related to Demand, Supply, and Manufacturing")
+    assert not r._is_heading("Our success depends on our ability to:")
+    assert r._is_heading("Competition could adversely impact our market share and financial results.")

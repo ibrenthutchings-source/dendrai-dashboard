@@ -104,11 +104,32 @@ def extract_item_1a(text: str) -> str:
     yields the longest section wins."""
     if not text:
         return ""
-    starts = [m.start() for m in re.finditer(r"item\s*1a[\.\s:—\-–]*risk\s+factors", text, flags=re.I)]
-    stop = re.compile(r"item\s*1b[\.\s:—\-–]|item\s*1c[\.\s:—\-–]|item\s*2[\.\s:—\-–]*properties|unresolved\s+staff\s+comments", re.I)
+    # Cross-references ("see Item 1A. Risk Factors" in Item 1C, MD&A, notes) also match the
+    # start pattern. With no later stop marker such a candidate ran to the end of the filing
+    # and, being the longest, won — so the "risk factors" were MD&A and the financial
+    # statement notes. A real heading begins its line and ends at a heading-like stop.
+    head = re.compile(r"^[ \t]*item\s*1a[\.\s:—\-–]*risk\s+factors", re.I | re.M)
+    stop_re = r"item\s*1b[\.\s:—\-–]|item\s*1c[\.\s:—\-–]|item\s*2[\.\s:—\-–]*properties|unresolved\s+staff\s+comments"
+    stop_line = re.compile(r"^[ \t]*(?:" + stop_re + ")", re.I | re.M)
+    stop_any = re.compile(stop_re, re.I)
     best = ""
-    for s in starts:
-        m = stop.search(text, s + 300)
+    for hm in head.finditer(text):
+        s = hm.start()
+        # A table-of-contents row has the next item's heading within a few hundred characters.
+        if stop_any.search(text, hm.end(), hm.end() + 400):
+            continue
+        m = stop_line.search(text, hm.end())
+        if not m:
+            continue                                  # no closing heading -> not a real section
+        sec = text[s:m.start()]
+        if len(sec) > len(best):
+            best = sec
+    if best:
+        return best[:MAX_SECTION_CHARS]
+    # Fallback for plain text without line structure: the original longest-candidate rule.
+    for m0 in re.finditer(r"item\s*1a[\.\s:—\-–]*risk\s+factors", text, flags=re.I):
+        s = m0.start()
+        m = stop_any.search(text, s + 300)
         sec = text[s: m.start() if m else min(len(text), s + MAX_SECTION_CHARS)]
         if len(sec) > len(best):
             best = sec
@@ -170,6 +191,10 @@ def _paragraphs(section: str) -> list[str]:
 
 def _is_heading(p: str) -> bool:
     if not (30 <= len(p) <= 420) or _BOILERPLATE.search(p) or not p[0].isupper():
+        return False
+    # Group banners ("Risks Related to Our Industry...") and lead-ins ("Our success depends on
+    # our ability to:") carry risk wording but are not themselves a risk factor.
+    if p.endswith(":") or re.match(r"^risks?\s+(related|relating|associated)\s+(to|with)\b", p, re.I):
         return False
     body = p.rstrip(".")
     if re.search(r"[.!?]\s+[A-Z]", body):          # more than one sentence -> body text
