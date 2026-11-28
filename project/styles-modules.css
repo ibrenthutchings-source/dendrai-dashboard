@@ -3229,3 +3229,9 @@ select.code-input { appearance: none; cursor: pointer; padding-right: 28px;
 @media (max-width: 900px) {
   .rsb .rtable th:nth-child(5), .rsb .rtable td:nth-child(5) { display: none; }
 }
+
+/* The centre column is `1fr` (= minmax(auto, 1fr)), so wide content (tab strips, KPI rows) pushed
+   it past the viewport and the whole pane scrolled sideways. Let it shrink; wide strips scroll
+   inside their own container instead. */
+.app-body > main { min-width: 0; overflow-x: hidden; }
+.app-body > main .tabs, .app-body > main [role="tablist"] { overflow-x: auto; max-width: 100%; }
