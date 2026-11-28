@@ -207,6 +207,13 @@ function GreySwanCard({ data }) {
           </div>
           <div className="gs-headline">{data.headline}</div>
           <div className="gs-desc">{data.description}</div>
+          {data.selection && (
+            <div className="gs-desc" style={{fontSize: 11.5, color: "var(--ink-3)", marginTop: 6}}>
+              {data.selection.basis === "evidence"
+                ? <>Chosen because of the evidence in this entity's own register (event score {data.selection.event_score}): {data.selection.drivers.slice(0, 3).map(d => `${d.label} [${d.source}]`).join("; ")}.</>
+                : "No adverse evidence maps to any tail event yet, so the industry default is shown."}
+            </div>
+          )}
         </div>
         <div className="gs-head-r">
           <div className="gs-arc">

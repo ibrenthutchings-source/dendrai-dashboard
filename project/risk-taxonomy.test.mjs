@@ -149,3 +149,33 @@ console.log("peer-evidence tests passed");
   assert.equal(typeof api.fetchRiskHistory, "function");
   console.log("replayApi tests passed");
 }
+
+// ── Grey Swan: the tail event is chosen from the evidence, deterministically ───────
+{
+  const ev = (points, label = "test evidence") => ({ source: "test", label, points, trend: false });
+  const gs = (maps, industry = "Generic") => R.buildGreySwan(R.scoreTaxonomy([maps]).risks, { rev: 5e9 }, "TST", industry);
+
+  const cyber = gs({ "TX-CYB": [ev(1.2, "Item 1C incident"), ev(0.8)], "TX-OPS": [ev(0.4)], "TX-LIQ": [ev(0.1)] });
+  assert.match(cyber.name, /ransomware/i, "cyber evidence selects the ransomware event");
+  assert.equal(cyber.risk_id, "TX-CYB", "anchor is the highest-scoring risk the event hits");
+  assert.equal(cyber.selection.basis, "evidence");
+  assert.ok(cyber.selection.drivers.some(d => d.label === "Item 1C incident"), "the driving evidence is cited");
+
+  const trade = gs({ "TX-TRD": [ev(1.5, "Export controls")], "TX-REG": [ev(0.6)], "TX-CYB": [ev(0.2)] }, "Semiconductors");
+  assert.match(trade.name, /export controls/i, "trade evidence selects the export-control event for a semiconductor issuer");
+
+  const fin = gs({ "TX-FRQ": [ev(1.4)], "TX-AUD": [ev(1.0)], "TX-GOV": [ev(0.5)] }, "Retail & Consumer");
+  assert.match(fin.name, /restatement/i);
+
+  // deterministic and independent of the anchor's id
+  const maps = { "TX-LIQ": [ev(1.0)], "TX-CAP": [ev(0.7)] };
+  assert.equal(gs(maps).name, gs(maps).name);
+  assert.match(gs(maps).name, /funding-market freeze/i);
+
+  // no adverse evidence anywhere -> documented default, not a random pick
+  const none = gs({ "TX-PRF": [ev(0)] });
+  assert.equal(none.selection.basis, "default");
+  assert.ok(none.name && none.risk_id, "still returns a usable scenario");
+  assert.ok(!/R-0\d/.test(JSON.stringify(R.buildGreySwan(R.scoreTaxonomy([{ "TX-TRD": [ev(1)] }]).risks, { rev: 1e9 }, "T", "Semiconductors"))), "no stale R-0x ids in the prose");
+  console.log("grey swan tests passed");
+}

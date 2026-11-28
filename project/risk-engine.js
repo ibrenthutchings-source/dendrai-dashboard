@@ -543,16 +543,18 @@ window.RISK_ENGINE = (function () {
   // only to provide context for *how* the external event propagates internally.
   const GREY_SWAN_EVENTS = {
     'Semiconductors': [
-      { name: 'Taiwan Strait escalation — single-source fab supply cutoff',
-        description: 'A credible military escalation in the Taiwan Strait triggers a halt to TSMC and downstream single-source fab shipments. Initial disruption appears manageable; within 30 days backlog exhaustion and inventory depletion accelerate the cascade to systemic supply failure — well beyond what current R-04 (Supply Chain) models.',
+      { tx: ['TX-OPS', 'TX-TRD'],
+        name: 'Taiwan Strait escalation — single-source fab supply cutoff',
+        description: 'A credible military escalation in the Taiwan Strait triggers a halt to TSMC and downstream single-source fab shipments. Initial disruption appears manageable; within 30 days backlog exhaustion and inventory depletion accelerate the cascade to systemic supply failure — well beyond what the current Operations & Supply Chain assessment models.',
         catalysts: [
           'PLA military exercises within 40nm of Taiwan extend beyond scheduled window',
           'US Department of Commerce issues emergency export restriction on fab equipment',
           'Lead-time quotes from alternative fabs extend beyond 40 weeks — no viable substitute',
           'Single-source component registry review confirms >60% of critical BOM at risk',
         ] },
-      { name: 'Sweeping US–China export controls — revenue cliff beyond current R-07 scope',
-        description: 'Sweeping new BIS export controls targeting both advanced and legacy semiconductors extend far beyond current R-07 (Export Controls & Trade Compliance) scope, rendering a material portion of China-destined revenue unlicensable within 90 days.',
+      { tx: ['TX-TRD', 'TX-REG'],
+        name: 'Sweeping US–China export controls — revenue cliff beyond the current trade assessment',
+        description: 'Sweeping new BIS export controls targeting both advanced and legacy semiconductors extend far beyond the current Trade & Sanctions assessment, rendering a material portion of China-destined revenue unlicensable within 90 days.',
         catalysts: [
           'BIS Entity List expanded to include additional Chinese fabs and system integrators',
           'De minimis threshold for foreign-produced items reduced from 25% to 10%',
@@ -561,7 +563,8 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
     'Automotive OEM': [
-      { name: 'Rapid EV demand collapse — stranded capacity and impairment cascade',
+      { tx: ['TX-REV', 'TX-STR', 'TX-FRQ'],
+        name: 'Rapid EV demand collapse — stranded capacity and impairment cascade',
         description: 'Consumer EV adoption rates fall sharply below forecast as range anxiety, charging infrastructure gaps, and insurance cost spikes converge. EV-dedicated manufacturing lines face severe under-utilisation within 90 days, triggering impairment charges and stranded asset write-downs not captured in Bear scenario.',
         catalysts: [
           'Industry EV SAAR falls >30% below consensus for two consecutive months',
@@ -571,7 +574,8 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
     'Software & Cloud': [
-      { name: 'Hyperscaler outage or emergency AI-product ban — platform concentration shock',
+      { tx: ['TX-CYB', 'TX-OPS', 'TX-REG'],
+        name: 'Hyperscaler outage or emergency AI-product ban — platform concentration shock',
         description: 'A prolonged multi-region cloud provider outage or an emergency regulatory ban on AI-dependent product features triggers immediate customer churn and SLA breach claims, cascading into reputational and legal escalation that falls entirely outside the current risk register scope.',
         catalysts: [
           'Cloud provider SLA breach triggers contractual penalty clauses across enterprise base',
@@ -581,7 +585,8 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
     'Financial Services': [
-      { name: 'Credit contagion event — correlated portfolio deterioration beyond stress models',
+      { tx: ['TX-LIQ', 'TX-CAP', 'TX-MAC'],
+        name: 'Credit contagion event — correlated portfolio deterioration beyond stress models',
         description: 'A correlated credit shock (commercial real estate collapse, regional bank contagion, or sovereign downgrade) triggers simultaneous CECL reserve increases, delinquency spikes, and deposit outflows that exceed modelled stress scenarios by a factor the current register does not capture.',
         catalysts: [
           'Fed emergency intervention signals systemic stress beyond prior DFAST bounds',
@@ -591,7 +596,8 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
     'Healthcare & Pharma': [
-      { name: 'FDA enforcement action or clinical hold — pipeline NPV collapse',
+      { tx: ['TX-REG', 'TX-REV'],
+        name: 'FDA enforcement action or clinical hold — pipeline NPV collapse',
         description: 'An unexpected FDA Complete Response Letter or clinical hold on a lead programme triggers an immediate pipeline NPV collapse, revenue guidance withdrawal, and accelerated patent cliff exposure not yet reflected in any scenario.',
         catalysts: [
           'FDA issues CRL for flagship NDA citing manufacturing or clinical data deficiency',
@@ -601,7 +607,8 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
     'Generic': [
-      { name: 'Regulatory enforcement shock — consent decree or criminal referral',
+      { tx: ['TX-REG', 'TX-GOV'],
+        name: 'Regulatory enforcement shock — consent decree or criminal referral',
         description: 'An unexpected regulatory enforcement action (consent decree, cease-and-desist, or criminal referral) requires immediate operational changes, causing revenue disruption and legal cost escalation well beyond modelled compliance risk and outside the current risk register scope.',
         catalysts: [
           'Regulatory agency issues public notice of formal investigation',
@@ -611,6 +618,37 @@ window.RISK_ENGINE = (function () {
         ] },
     ],
   };
+  // Cross-industry events: every entity is also scored against these, so a cyber / funding /
+  // reporting problem in the evidence can surface a matching tail event whatever the industry.
+  const GREY_SWAN_UNIVERSAL = [
+    { tx: ['TX-CYB', 'TX-OPS'],
+      name: 'Destructive ransomware event — multi-week outage of core systems',
+      description: 'A ransomware or wiper attack takes core order, production and finance systems offline for weeks. Revenue recognition stops, regulators and customers demand disclosure, and recovery cost and litigation exceed anything the current cyber assessment prices in.',
+      catalysts: [
+        'Threat-intelligence advisory names the sector or a key vendor as an active target',
+        'Privileged-credential compromise detected at a managed service provider',
+        'Backup restoration test fails or exceeds the recovery-time objective',
+        'Form 8-K Item 1.05 filed by a peer or critical supplier',
+      ] },
+    { tx: ['TX-LIQ', 'TX-CAP', 'TX-MAC'],
+      name: 'Funding-market freeze — refinancing window closes',
+      description: 'Credit markets seize up just as debt matures. Revolver availability is withdrawn or repriced, the issuer loses market access, and covenant headroom disappears faster than the liquidity plan assumes.',
+      catalysts: [
+        'Credit spreads for the issuer\'s rating band widen beyond prior stress bounds',
+        'Lender signals a covenant waiver or borrowing-base review',
+        'Rating agency places the issuer on negative watch',
+        'Commercial-paper or term-loan market is effectively closed for the sector',
+      ] },
+    { tx: ['TX-FRQ', 'TX-AUD', 'TX-GOV'],
+      name: 'Restatement and auditor resignation — loss of reporting credibility',
+      description: 'A material weakness leads to a restatement of prior periods, the audit committee opens an investigation and the auditor resigns or withholds an opinion. Filing delays trigger lender defaults and exchange deficiency notices.',
+      catalysts: [
+        'Audit committee discloses an independent investigation into accounting',
+        'Form 8-K Item 4.02 (non-reliance) or Item 4.01 (auditor change) is filed',
+        'Annual report or quarterly filing is delayed (Form NT 10-K / NT 10-Q)',
+        'SEC staff comment letter escalates to a request for restatement analysis',
+      ] },
+  ];
   GREY_SWAN_EVENTS['Industrial & Manufacturing'] = GREY_SWAN_EVENTS['Generic'];
   GREY_SWAN_EVENTS['Retail & Consumer']           = GREY_SWAN_EVENTS['Generic'];
   GREY_SWAN_EVENTS['Energy & Resources']          = GREY_SWAN_EVENTS['Generic'];
@@ -620,17 +658,38 @@ window.RISK_ENGINE = (function () {
   function buildGreySwan(risks, ratios, ticker, industry) {
     // Anchor = highest-velocity risk from the register the exogenous event would amplify.
     // Velocity ≥ 3 risks are the primary auto-escalation candidates per loop recommendations.
+    // Only assessed risks reach here (categories with no evidence are never in `risks`).
     const byVel = [...risks].sort((a, b) => (b.velocity - a.velocity) || (b.score - a.score));
-    const anchor = byVel.find(r => r.velocity >= 3) || byVel.find(r => r.velocity >= 2) ||
+    const fallbackAnchor = byVel.find(r => r.velocity >= 3) || byVel.find(r => r.velocity >= 2) ||
                    byVel[0] || { id:'R-01', name:'Primary Risk', score:5.0, rag:'A', velocity:0 };
-    // Co-activation partner: a second register risk the grey swan cascade would hit
-    const partner = risks.find(r => r.id !== anchor.id && r.rag === 'R') ||
+
+    // Event selection is deterministic and evidence-driven: each candidate event (industry-specific
+    // plus the cross-industry ones) is scored by the adverse evidence points in the categories it
+    // would hit. Highest total wins; ties break on the best single category score, then list order.
+    // No adverse evidence in any linked category -> fall back to the first industry event.
+    const pts = r => (r.evidence || []).reduce((t, e) => t + Math.max(0, e.points || 0), 0);
+    const byId = Object.fromEntries(risks.map(r => [r.id, r]));
+    const pool = [...(GREY_SWAN_EVENTS[industry] || GREY_SWAN_EVENTS['Generic']), ...GREY_SWAN_UNIVERSAL];
+    const ranked = pool.map((ev, order) => {
+      const linked = (ev.tx || []).map(t => byId[t]).filter(Boolean);
+      return { ev, order, linked, total: linked.reduce((t, r) => t + pts(r), 0),
+               top: linked.reduce((m, r) => Math.max(m, r.score), 0) };
+    }).sort((a, b) => (b.total - a.total) || (b.top - a.top) || (a.order - b.order));
+    const pick = ranked[0].total > 0 ? ranked[0] : { ...ranked.find(x => x.ev === (GREY_SWAN_EVENTS[industry] || GREY_SWAN_EVENTS['Generic'])[0]), linked: [], total: 0 };
+    const event = pick.ev;
+    const evidenceDriven = pick.total > 0;
+
+    // Anchor = the highest-scoring assessed risk the event hits (so the cascade is coherent with
+    // the evidence); partner = the next one, else any other red / fast-moving risk.
+    const hit = [...pick.linked].sort((a, b) => (b.score - a.score) || (b.velocity - a.velocity));
+    const anchor = hit[0] || fallbackAnchor;
+    const partner = hit[1] ||
+                    risks.find(r => r.id !== anchor.id && r.rag === 'R') ||
                     risks.find(r => r.id !== anchor.id && r.velocity >= 2) ||
                     risks.find(r => r.id !== anchor.id) || anchor;
-
-    // Select industry-specific exogenous event; rotate by anchor id character to vary between tickers
-    const events = GREY_SWAN_EVENTS[industry] || GREY_SWAN_EVENTS['Generic'];
-    const event  = events[anchor.id.charCodeAt(anchor.id.length - 1) % events.length];
+    const drivers = hit.flatMap(r => (r.evidence || []).filter(e => e.points > 0)
+                         .map(e => ({ risk: r.name, label: e.label, source: e.source, points: e.points })))
+                       .sort((a, b) => b.points - a.points).slice(0, 4);
 
     // Revenue impact: grey swan exceeds Bear scenario (-18%) by design.
     // T+30: ~10% | T+60: ~22% | T+90: ~35% of annual revenue
@@ -660,6 +719,9 @@ window.RISK_ENGINE = (function () {
       peak_impact_m: imp90,
       revenue_impact_pct: -35,
       probability: 'LOW · plausible',
+      selection: evidenceDriven
+        ? { basis: 'evidence', event_score: +pick.total.toFixed(2), categories: (event.tx || []), drivers }
+        : { basis: 'default', event_score: 0, categories: (event.tx || []), drivers: [] },
       headline: `${event.name.split('—')[0].trim()} amplifies ${anchor.name?.split('—')[0].trim()} (score ${anchor.score}/25, velocity ${anchorVelStr}) to systemic disruption`,
       description: event.description,
       catalysts: event.catalysts,
