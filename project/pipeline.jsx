@@ -499,6 +499,9 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
                         enabledFeedIds, onRssSignalsReady,
                         onBack, onPrev, onNext, prevLabel, nextLabel, gateBelow }) {
   const subSteps = status === "done" ? buildSubSteps(stage.id, output, signals, livefacts, s1Extra, s2Extra, s3Extra) : [];
+  // The RSS panel is mounted (it fetches and reports signals) but only SHOWN on Stage 1's RSS tab.
+  const [s1Tab, setS1Tab] = React.useState("overview");
+  const s1ExtraT = stage.id === "s1" ? { ...(s1Extra || {}), onTabChange: setS1Tab } : s1Extra;
   return (
     <div className={`loop-canvas stage ${status}`} data-screen-label={`Stage ${stage.id.replace("s", "")}`}>
       <div className="canvas-nav">
@@ -519,13 +522,15 @@ function StageCanvas({ stage, status, output, fullOutput, signals, livefacts, fo
             stageKpis() here exists only for the hub card, not duplicated. */}
         <div className="stage-body-grid">
           <StageBody id={stage.id} status={status} output={output} signals={signals} livefacts={livefacts}
-                     s1Extra={s1Extra} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
+                     s1Extra={s1ExtraT} s2Extra={s2Extra} s3Extra={s3Extra} s5Extra={s5Extra} forecasts={forecasts}/>
         </div>
 
         {stage.id === "s1" && status === "done" && window.RSSPanel && (
-          <PipelinePanel label="RSS Signals">
-            <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
-          </PipelinePanel>
+          <div style={{ display: s1Tab === "rss" ? "block" : "none" }}>
+            <PipelinePanel label="RSS Signals">
+              <RSSPanel enabledFeedIds={enabledFeedIds} onSignalsReady={onRssSignalsReady} risks={risks} ticker={pipelineTicker || ""} companyName={companyName}/>
+            </PipelinePanel>
+          </div>
         )}
         {/* Revenue/margin mini-charts used to duplicate here what Stage 1's own
             "Forecasts" tab already shows in full (with Monte Carlo commentary,
@@ -1640,7 +1645,7 @@ function StageBody({ id, status, output, signals, livefacts, s1Extra, s2Extra, s
       </div>
     );
   }
-  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare} intake={s1Extra?.intake} loopProgress={s1Extra?.loopProgress} liveRssSignals={s1Extra?.liveRssSignals}/><StageTrace trace={trace}/></>;
+  if (id === "s1") return <><S1Body output={output} signals={signals} livefacts={livefacts} ticker={s1Extra?.ticker || ""} narrativeResult={s1Extra?.narrativeResult} onNarrativeResult={s1Extra?.onNarrativeResult} forecasts={forecasts ?? s1Extra?.forecasts} enabledFeedIds={s1Extra?.enabledFeedIds || []} onRssSignalsReady={s1Extra?.onRssSignalsReady} peerData={s1Extra?.peerData} onAddObjective={s1Extra?.onAddObjective} peerCompareList={s1Extra?.peerCompareList} peerCompareLoading={s1Extra?.peerCompareLoading} peerCompareError={s1Extra?.peerCompareError} onAddPeerCompare={s1Extra?.onAddPeerCompare} onRemovePeerCompare={s1Extra?.onRemovePeerCompare} onClearPeerCompare={s1Extra?.onClearPeerCompare} intake={s1Extra?.intake} loopProgress={s1Extra?.loopProgress} liveRssSignals={s1Extra?.liveRssSignals} onTabChange={s1Extra?.onTabChange}/><StageTrace trace={trace}/></>;
   if (id === "s2") return <><S2Body output={output} {...(s2Extra || {})} forecasts={forecasts}/><StageTrace trace={trace}/></>;
   if (id === "s3") return <><S3Body output={output} {...(s3Extra || {})}/><StageTrace trace={trace}/></>;
 
@@ -1773,7 +1778,7 @@ function S1RunningBody({ rssRunProgress, rssFeeds }) {
 function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrativeResult, onNarrativeResult, forecasts, enabledFeedIds = [], onRssSignalsReady = null, peerData = null, onAddObjective = null,
                   peerCompareList = [], peerCompareLoading = false, peerCompareError = null,
                   onAddPeerCompare = null, onRemovePeerCompare = null, onClearPeerCompare = null,
-                  intake = null, loopProgress = null, liveRssSignals = [] }) {
+                  intake = null, loopProgress = null, liveRssSignals = [], onTabChange = null }) {
   // Peer selection / gauge-peer derivation now lives inside FraudDistressPanel
   // and ForecastsPanel (below) — both tabs are rendered through those shared
   // components so Gate 1's review screen can show the same content inline.
@@ -1821,6 +1826,7 @@ function S1Body({ output, signals, livefacts, ticker: tickerProp = "", narrative
     { id: "history", label: "Run History" },
   ];
   const [activeTab, setActiveTab] = React.useState("overview");
+  React.useEffect(() => { onTabChange && onTabChange(activeTab); }, [activeTab]);
 
   return (
     <div className="stage-body-grid">
